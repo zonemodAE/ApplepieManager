@@ -1,6 +1,6 @@
 # Applepie SDK
 
-本文对应 **Applepie Manager v0.2.2**。管理器发布版本与 SDK ABI 独立编号；当前基础 ABI 为 **1.1**（兼容 1.0 插件），各服务版本为 1。
+本文对应 **Applepie Manager v0.2.3**。管理器发布版本与 SDK ABI 独立编号；当前基础 ABI 为 **1.1**（兼容 1.0 插件），各服务版本为 1。
 
 SDK 由 `applepie_manager.dll` 提供，全部 C 接口统一在 [applepie.h](applepie.h)。平台为 Windows x64、MSVC C11/C++17、8 字节 pack。公开边界只传固定 POD、opaque handle、函数指针和模块期 context，不传 STL/CRT 对象、C++ 异常或分配所有权。
 
@@ -354,6 +354,6 @@ Core 只管理已接入的 Hook、通知、PointerPatch、窗口路由、游戏�
 
 ## 版本与发行
 
-消费方可自行记录 SDK 版本和头文件 SHA256；`applepie-sdk.lock.json` 是可选记录，Manager 和本 SDK 示例构建不读取或强制校验它。消费方自己的构建或验证脚本可以检查该文件，升级 SDK 时应同步更新其记录。Manifest 的 `required_minor` 按实际需要的 ABI 填写，不使用管理器的 `0.2.2` 发布版本；使用 `APH_PluginInfo` 或要求新增服务可用的插件应声明 ABI 1.1。
+消费方可自行记录 SDK 版本和头文件 SHA256；`applepie-sdk.lock.json` 是可选记录，Manager 和本 SDK 示例构建不读取或强制校验它。消费方自己的构建或验证脚本可以检查该文件，升级 SDK 时应同步更新其记录。Manifest 的 `required_minor` 按实际需要的 ABI 填写，不使用管理器的 `0.2.3` 发布版本；使用 `APH_PluginInfo` 或要求新增服务可用的插件应声明 ABI 1.1。
 
 升级时验证准确 native ABI、恢复时机、旧 epoch/目标命令失效，以及目标游戏内的插件共存行为。未声明并登记生命周期服务的客户端仍可使用基础加载与 Hook，但不开放运行中首次加载/启停。DLL 升级需要重启进程。
