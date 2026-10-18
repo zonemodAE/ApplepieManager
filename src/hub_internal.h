@@ -1,5 +1,6 @@
 #pragma once
 #include "hub_core.h"
+#include "resident_table.h"
 #include "../sdk/applepie_seh.h"
 
 namespace hub {
@@ -39,8 +40,8 @@ const APH_PluginServiceApi* plugin_api();
 const APH_DiagnosticsApi* diagnostics_api();
 const APH_ConfigApi* config_api();
 const APH_WindowApi* window_api();
-void shared_tick(const unsigned char* owner_failure);
-void window_tick(const unsigned char* owner_failure);
+void shared_tick();
+void window_tick();
 void shared_epoch_close(APH_Owner);
 void window_epoch_close(APH_Owner);
 bool pointer_pending(APH_Owner);

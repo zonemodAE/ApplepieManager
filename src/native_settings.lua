@@ -102,7 +102,7 @@ local function showHeaderVersion(self, show)
         version.fontSize = title.fontSize * 0.6
         version.horizontalAlignment = CS.TMPro.HorizontalAlignmentOptions.Right
         version.raycastTarget = false
-        version.text = "v0.2.2"
+        version.text = applepieVersion
         self.view.applepieVersionText = version
     end
     if version then version.gameObject:SetActive(show) end

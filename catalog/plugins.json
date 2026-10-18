@@ -1,0 +1,19 @@
+{
+  "plugins": [
+    {
+      "id": "anti_afk",
+      "repository": "Sasye/EndFieldAntiKick",
+      "entryDll": "anti_afk.dll"
+    },
+    {
+      "id": "combat_hud",
+      "repository": "Sasye/EndfieldCombatHUD",
+      "entryDll": "EndfieldCombatHUD.dll"
+    },
+    {
+      "id": "synchro_focus",
+      "repository": "Sasye/EndfieldSynchroFocus",
+      "entryDll": "synchro_focus.dll"
+    }
+  ]
+}

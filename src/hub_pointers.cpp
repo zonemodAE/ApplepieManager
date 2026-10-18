@@ -2,15 +2,12 @@
 #include "hub_internal.h"
 #include <initializer_list>
 namespace {
-constexpr unsigned Capacity=128;
-struct Patch { APH_Owner owner; uint64_t generation; APH_PointerRequest request; uint32_t state; APH_Result result; bool admitted,cleanup; };
+struct Patch { APH_Owner owner; APH_Patch token; APH_PointerRequest request; uint32_t state; APH_Result result; bool admitted,cleanup; };
 SRWLOCK lock=SRWLOCK_INIT;
-Patch patches[Capacity]{};
-APH_Patch handle(unsigned i,const Patch& p){return (p.generation<<8)|(i+1);}
+hub::ResidentTable<Patch> patches;
+hub::TokenIndex<Patch> patch_tokens;
 Patch* find(APH_Owner owner,APH_Patch id) {
-    unsigned n=(unsigned)(id&255u);
-    if(!n||n>Capacity)return nullptr;
-    Patch& p=patches[n-1];return p.owner==owner&&p.generation==(id>>8)?&p:nullptr;
+    Patch* p=patch_tokens.find(id);return p&&p->owner==owner?p:nullptr;
 }
 bool pin(const void* address) {
     HMODULE module=nullptr;
@@ -47,29 +44,30 @@ APH_Result APH_CALL request(APH_Owner owner,const APH_PointerRequest* input,APH_
     if(!data_slot(r))return APH_E_BUILD;
     AcquireSRWLockExclusive(&lock);
     __try {
-        unsigned free=Capacity;
-        for(unsigned i=0;i<Capacity;++i) {
+        size_t free=patches.size();
+        for(size_t i=0;i<patches.size();++i) {
             Patch& p=patches[i];
             if(p.owner&&p.state!=APH_PATCH_RESTORED&&p.request.slot==r.slot)return APH_E_BUSY;
-            if(free==Capacity&&(!p.owner||p.state==APH_PATCH_RESTORED))free=i;
+            if(free==patches.size()&&(!p.owner||p.state==APH_PATCH_RESTORED))free=i;
         }
-        if(free==Capacity)return APH_E_QUEUE_FULL;
+        if(!patches.ensure(free))return APH_E_QUEUE_FULL;
         valid=hub::services::runtime_api()->validate(owner,&r.access);if(valid<0)return valid;
+        Patch& p=patches[free];APH_Patch id=patch_tokens.issue(&p,p.token);
+        if(!id)return APH_E_QUEUE_FULL;
         bool cleanup=false;
         if(!hub::admit_owner(owner,r.access.activation_epoch)) {
-            if(!hub::admit_cleanup_resource(owner,r.access.activation_epoch))return APH_E_REVOKED;cleanup=true;
+            if(!hub::admit_cleanup_resource(owner,r.access.activation_epoch)){patch_tokens.cancel(id,p.token);return APH_E_REVOKED;}cleanup=true;
         }
-        Patch& p=patches[free];++p.generation;if(!p.generation)++p.generation;
+        patch_tokens.forget(p.token);p.token=id;
         p.owner=owner;p.request=r;p.state=APH_PATCH_RESTORED;p.result=APH_OK;p.admitted=true;p.cleanup=cleanup;
         void* prior=nullptr;
         if(!cas(r.slot,r.replacement,r.expected,&prior)) {
             p.state=APH_PATCH_UNCERTAIN;p.result=APH_E_NEEDS_RESTART;hub::resource_delta(owner,1);
-            APH_Patch id=handle(free,p);hub::copy(out,&id,sizeof(id));
+            hub::copy(out,&id,sizeof(id));
             hub::services::fault(owner,0xe0410010u,(uint64_t)(uintptr_t)r.slot,APH_ORIGINAL_NOT_ENTERED,false);return p.result;
         }
         if(prior!=r.expected){p.result=APH_E_EXPECTED;p.admitted=false;if(p.cleanup)hub::leave_cleanup_resource(owner);else hub::leave_owner(owner);return p.result;}
         p.state=APH_PATCH_APPLIED;hub::resource_delta(owner,1);
-        APH_Patch id=handle(free,p);
         if(hub::copy(out,&id,sizeof(id)))return APH_OK;
         if(cas(r.slot,r.expected,r.replacement,&prior)&&prior==r.replacement){p.state=APH_PATCH_RESTORED;p.admitted=false;if(p.cleanup)hub::leave_cleanup_resource(owner);else hub::leave_owner(owner);hub::resource_delta(owner,-1);return APH_E_ARGUMENT;}
         p.state=APH_PATCH_UNCERTAIN;p.result=APH_E_NEEDS_RESTART;

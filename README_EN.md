@@ -6,23 +6,23 @@
 
 English | [中文](README.md)
 
-A DLL plugin manager for *Arknights: Endfield*. Manager contains a Core for plugin loading, exclusive and typed shared hooks, managed pointer slots, window routing, asynchronous logical enable/disable and independent animation/camera ownership. Its **Applepie Manager** tab lives in the game's settings menu, uses native controls and includes UID visibility settings. See the [SDK](sdk/README.md) for plugin integration.
+A DLL plugin manager for *Arknights: Endfield*. Manager includes a Core for plugin loading, exclusive and typed shared hooks, managed pointer slots, window routing, asynchronous logical enable/disable, and independent animation/camera write ownership. It also provides UID hiding. See the [SDK](sdk/README.md) for plugin integration.
 
 ## Key Features
 
-- **Plugin Management**: Scans after CoreReady, checks manifests, ABI, duplicate IDs and required capabilities, and distinguishes loaded/attached/active states
+- **Plugin Management**: Scans `plugin\` after CoreReady, checks manifests, ABI, duplicate IDs and required capabilities, and distinguishes loaded/attached/active states
 - **Dynamic Hooks**: Exclusive and typed shared targets, two-stage activation, address deduplication, exact native signatures and SEH entry contracts; SDK in `sdk/`
 - **Shared Services**: Conditional PointerPatch restoration, one game-window chain and minimal runtime/target-generation tickets
 - **Lifecycle and Ownership**: Runtime buttons asynchronously load, enable and disable adapted clients; Disabled requires confirmed restoration, Enable grants no animation/camera ownership, and DLLs remain resident
 - **Unified Enable Switch**: Requests the session state and automatically saves the next-launch preference; rejected requests preserve the previous preference
-- **Basic Settings**: Plugins can optionally register boolean, integer, floating-point, enum, short-text and key fields. Keys show their names and support press-to-bind input. Manager provides editing, validation, automatic asynchronous persistence and completion notifications with dynamic field counts; complex configuration remains plugin-owned
+- **Basic Settings**: Plugins can optionally register boolean, integer, floating-point, enum, short-text and key fields. Keys show their names and support press-to-bind input. Manager provides editing, validation, automatic saving after changes and completion notifications. Fields are allocated dynamically; complex configuration remains plugin-owned
 - **UID Hiding**: Hide in-game UID, ping display, menu UID/name, and business card UID/name
 - **Multilingual UI**: Chinese/English toggle for the Manager panel
 
 ## User Agreement & Disclaimer
 
 <details>
-<summary>Please read this agreement carefully before downloading, installing, or using this plugin (EIEM). <b>By using this plugin, you acknowledge that you have fully read, understood, and agreed to all of the following terms.</b></summary>
+<summary>Please read this agreement carefully before downloading, installing, or using this plugin. <b>By using this plugin, you acknowledge that you have fully read, understood, and agreed to all of the following terms.</b></summary>
 
 ### 1. Open Source License & End User Rights
 - This plugin is fully open-sourced on GitHub under the **AGPL-3.0** license. Users may freely use, modify, and distribute the source code of this plugin in compliance with the license.
@@ -42,7 +42,12 @@ A DLL plugin manager for *Arknights: Endfield*. Manager contains a Core for plug
 
 ## Installation
 
-Windows x64 is required. Install the three DLLs from the release package at the following locations relative to the game directory (the folder containing `Endfield.exe`). When building from source, these files are generated in `bin/`:
+Download the latest release from [Releases](https://github.com/zonemodAE/ApplepieManager/releases), or build it from source.
+Each release provides an Applepie Manager desktop installer (`*-setup.exe`), a portable executable (`ApplepieManager.exe`), and individual DLLs.
+
+Open the Applepie Manager desktop application, select the game folder, and click **Install / update to game**.
+
+You can also manually place the three DLLs at the following locations (the game directory is the folder containing `Endfield.exe`). When building from source, these files are generated in `bin/`:
 
 ```text
 applepie_manager.dll   → Game Directory/plugin/applepie_manager.dll
@@ -50,19 +55,23 @@ vulkan-1.dll           → Game Directory/vulkan-1.dll
 d3dcompiler_47.dll     → Game Directory/d3dcompiler_47.dll
 ```
 
-> `d3dcompiler_47.dll` (DirectX) and `vulkan-1.dll` (Vulkan) only bootstrap Manager. Either or both can be used. Plugins integrate through the SDK; legacy proxies, packages and hosts are not bridged.
+> `d3dcompiler_47.dll` (DirectX) and `vulkan-1.dll` (Vulkan) only bootstrap Manager. Either or both can be used.
 
 > If you have **never installed a plugin of this type before**, you may need to create the `plugin` folder yourself.
 
 ## Usage
 
-1. Launch the game after installing the files as described above.
+1. After installing as described above, click **Connect to Talos-II** to launch the game, or launch it manually.
 2. Open the game's settings menu and select the added icon at the end of the tab list. The selected page is titled **Applepie Manager**.
 3. Click **Configure** beside a plugin to open its settings, then **Details** to inspect its state and errors. Active is green; inactive states are red. **Enable plugin** controls the current session and automatically saves the next-launch preference.
-4. Basic settings save automatically. Press a key to record a binding, or Esc to cancel. Confirm text and numeric edits in the game's native input popup to save them.
+4. Basic settings save automatically. Press a key to record a binding, or Esc to cancel.
 5. Open **Manager settings** for language and UID/ping/menu/business-card visibility options.
 
 Loaded plugin DLLs remain resident. To replace Manager or a loaded plugin DLL, exit the game, replace the file, and restart.
+
+## Plugin Installation
+
+Open the **Plugin downloads** tab to download plugins from the [GitHub plugin catalog](https://github.com/zonemodAE/ApplepieManager/blob/master/catalog/plugins.json). You can also install plugins manually on the plugin management page.
 
 ## Configuration and Upgrades
 
@@ -70,6 +79,7 @@ Loaded plugin DLLs remain resident. To replace Manager or a loaded plugin DLL, e
 | --- | --- |
 | Manager language, UID visibility, and plugin startup preferences | `plugin/config/applepie.manager.ini` under the game directory |
 | Basic settings registered through the SDK | `config/applepie.<pluginID>.ini` beside the corresponding plugin DLL |
+| Field descriptions for desktop editing | `config/applepie.<pluginID>.schema.json`, written by Core when settings are registered |
 | Default Manager configuration template | [templates/config/applepie.manager.ini](templates/config/applepie.manager.ini) in this repository |
 
 Configuration uses flat UTF-8 `key=value` entries and `true/false` switches, without `[general]`, `[uid]`, or `[plugins]` sections. For example:
@@ -88,9 +98,11 @@ When upgrading, if the new file is absent, Manager imports language, UID, and pl
 
 In-game changes save automatically. External file edits are read on the next launch. A failed save preserves the existing file, and errors are available in the UI and logs.
 
+The desktop editor preserves comments and unknown keys and checks for external edits before saving to avoid overwriting a newer file. Enable a plugin once to generate its field description. When a description is absent or no longer matches the DLL, existing key/value entries remain editable. Complex settings not registered through the SDK are managed through the plugin's own interface.
+
 ## Plugin Development
 
-Plugins can use the optional [C++ client](sdk/applepie_client.h) and [Endfield shared adapters](sdk/applepie_endfield_adapters.h); the [C API](sdk/applepie.h) remains available. See the [SDK guide](sdk/README.md) for integration and a complete example. Run `sdk\examples\build.bat` to build the minimal plugin, or add `/verify` for standalone offline checks. Neither command launches or deploys to the game.
+Plugins can use the [C++ client](sdk/applepie_client.h) and include the [optional adapters](sdk/applepie_endfield_adapters.h) when they need common Endfield shared hooks; the underlying [C API](sdk/applepie.h) remains available. See the [SDK guide](sdk/README.md) for integration and a buildable example. Run `sdk\examples\build.bat` to build the minimal plugin, or add `/verify` for standalone offline checks. Neither command launches or deploys to the game.
 
 For new plugins or features, use the [Applepie plugin development skill](skills/applepie-plugin-development/SKILL.md) to select SDK interfaces, verify game interfaces, and plan validation for the required functionality.
 

@@ -108,6 +108,8 @@ Manager 位于游戏设置菜单的 **Applepie Manager** 页签。插件条目�
 
 持久文件位于**插件 DLL 所在目录的 `config/applepie.<插件ID>.ini`**，以 UTF-8 `key=value` 保存，文本首尾空格和等号会保留。缺少值使用默认值；类型/范围不合法的已有值按字段回退，并通过 `defaulted_fields` 返回数量。结构损坏、重复 key、非法 UTF-8 或读取失败会拒绝注册并保留原文件。保存先写同目录临时文件再替换；失败保留旧文件、旧值和修订号，返回 `APH_E_IO` 与 Win32 错误，详情可在 Diagnostics 中查看。未知 key 会保留，注释不作为持久状态保留。运行时不监听文件变化，菜单的“刷新状态”读取当前内存快照；外部文件修改在下次启动时读取。
 
+注册成功后，Core 会在同目录生成 `applepie.<插件ID>.schema.json`，供桌面管理器在游戏外显示字段和按键控件。描述包含字段默认值、范围、选项以及 DLL 文件大小与修改时间；插件更新后，旧描述失效，下一次注册会刷新。生成描述失败仅记日志，不影响配置注册，也不修改 INI。插件无需增加接口或轮询。桌面编辑保留注释和未知键，并在保存前检查外部修改；游戏内保存仍使用上述 SDK 持久化规则。
+
 Manager 自身使用同一配置读写实现，文件为 `plugin/config/applepie.manager.ini`，模板位于 [`templates/config/applepie.manager.ini`](../templates/config/applepie.manager.ini)。`manager` 是此文件保留的配置 ID，业务插件不能用该 ID 注册配置。语言和 UID 选项为扁平字段，插件启动偏好为 `plugin.<小写 DLL 文件名>=true/false`。旧的分节 TXT 配置仅在新文件缺失时导入一次，新文件始终优先；旧文件保持原样，之后不再写入。启动时读取一次，游戏内修改通过异步保存写回，无文件轮询。
 
 键为 1..47 个 ASCII 字母、数字、点、下划线或连字符；标签/说明分别最多 95/159 个 UTF-8 字节，枚举值最多 63 字节，短文本最多 255 字节。字符串必须 NUL 结尾，不接受换行、控制字符或非法 UTF-8；数值不接受 NaN/Infinity。枚举按字符串持久化，调整选项顺序不会改变已保存的含义。字段及选项总数按实际需要分配，资源不足时返回错误。
@@ -147,7 +149,7 @@ Runtime v1 的可选尾部 `probe_open(owner)` 用于高频检查模块/运行�
 
 `Client::Service<APH_PluginServiceApi>` 取得服务表。提供方在本次 Enable 中 `publish` 名称、major/minor、当前 epoch、线程策略、回调及 context；只有 Active 后可被查到。使用方 `find` 指定提供方 ID、服务名、major、最低 minor，再用 `invoke` 传自己的当前 epoch。
 
-调用同步执行，Core 锁外调用提供方，参数和结果各最多 4096 字节、16 字节对齐的 POD 副本。消息内不传裸指针、STL/CRT 对象或跨调用借用引用。服务自行约定 operation、结构布局和结果语义。只有回调返回 OK 才复制结果；无异步排队，最多 16 层嵌套。共有 128 个服务槽，撤销或旧启用期结束且在途调用排空后复用。
+调用同步执行，Core 锁外调用提供方，参数和结果各最多 4096 字节、16 字节对齐的 POD 副本。消息内不传裸指针、STL/CRT 对象或跨调用借用引用。服务自行约定 operation、结构布局和结果语义。只有回调返回 OK 才复制结果；无异步排队，最多 16 层嵌套。服务记录按需扩展，撤销或旧启用期结束且在途调用排空后复用。
 
 Core 同时计入使用方和提供方的在途调用，停用关闭新调用并等待已进入的调用返回后才恢复插件。`withdraw` 有在途调用时返回 Pending，返回 OK 才能释放 context；不要在回调内等待自己的排空。再发布取得新句柄，旧句柄返回 Stale。发生提供方停用、失败或重启时，使用方要处理失败并重新 `find`，不能持有提供方原始函数指针绕过调用入口。
 
@@ -277,7 +279,7 @@ claim 属于模块期；epoch 属于本次启用。基础生命周期只启用�
 
 等待期间，普通 snapshot 的 `target_ready=0`，旧目标命令/票据验证失败；仅 Core 的受限 restore 回调取得旧清理上下文。其 deadline 不因重复 Pending 延长。真正恢复失败、超时、对象失效或 Runtime 停止时，仍保留不确定占用并要求重启。未走 SetMain 的对象重建也须核对实体、Animator、native cached pointer 与实例 ID；托管 GCHandle 并不保证 Unity 原生对象仍然存活。
 
-通知/共享订阅/窗口路由的已关闭且排空槽允许同 owner 复用，但每次生成新 handle generation。Core Window 队列 128 项、128 路由、64 窗口；共享注册表 64 site、256 claim、256 listener；PointerPatch 128 项。满队列返回明确错误。客户端复制命令输入，Core 消息只带有界标量或槽身份，不能借用 UI/网络栈指针。
+通知/共享订阅/窗口路由的已关闭且排空记录允许同 owner 复用，但每次生成新的不透明句柄。窗口、路由、共享注册表和 PointerPatch 记录均按需扩展；Core Window 待执行命令队列仍为 128 项，满队列返回明确错误。客户端复制命令输入，Core 消息只带有界标量或槽身份，不能借用 UI/网络栈指针。
 
 ## Animation 与 Camera 写权
 
@@ -335,17 +337,17 @@ EIEM 的晚安装组先提交请求，在 resident worker 上保存 original、�
 
 `owner_status` 给出状态、epoch、受管业务/生命周期在途数、首个故障记录、保留资源数量；`query_hook` 给出准备/启用/释放状态、original、native 在途数、MinHook 返回码。面板分别显示 Loaded、Attached、Capabilities 和实际状态。“启用插件”统一开关异步请求本次启停，请求被接受后自动保存相同的下次启动偏好；请求被拒绝时保留原偏好并显示错误。只有 Active 显示绿色，其他状态显示红色，准备和排空期间保留实际状态名称。
 
-基础服务保留 64 owner、128 notice subscription、同线程 32 层受管 native 入口的限制。原生 Hook 记录按需分配，不再设 128 项或每插件数量上限；扩容不移动已发布记录，分配失败返回 QueueFull。模块/native claim 不复用；对已关闭且排空的同 owner 通知、共享订阅和窗口路由槽使用代际句柄复用，旧 ID 仍被拒绝。故障清理标志独立于新增申请容量。深递归超过 SDK 计数栈时不再分发业务，original 仍依赖永久保留的 trampoline。日志写到 `plugin/applepie_core.log` 和 OutputDebugString，记录操作、owner、claim、target、模式、key、结果；异常过滤器不写日志。Core 与 Manager 的文件日志均按[错误详情与日志](#错误详情与日志)中的规则轮换。
+插件目录、owner、原生/共享 Hook、通知、slot、窗口记录及业务服务注册表按实际数量扩展，不设固定注册数量上限；配置、生命周期与诊断记录随 owner 扩展。扩容不移动已发布记录；故障路径通过常驻索引查找，不取锁或分配内存。模块/native claim 不复用；已关闭且排空的同 owner 通知、共享订阅和窗口路由槽可复用记录，每次返回新的不透明句柄。句柄不划分固定槽位索引位数，不可自行解码；旧 ID 仍被拒绝，复用索引节点不产生新的堆分配。注册分配失败返回 QueueFull，加载器明确报告扫描失败，不静默丢弃后续 DLL。同线程受管 native 入口仍最多 32 层，超过 SDK 计数栈时不再分发业务，original 仍依赖永久保留的 trampoline。日志写到 `plugin/applepie_core.log` 和 OutputDebugString，记录操作、owner、claim、target、模式、key、结果；异常过滤器不写日志。Core 与 Manager 的文件日志均按[错误详情与日志](#错误详情与日志)中的规则轮换。
 
 Core 只管理已接入的 Hook、通知、PointerPatch、窗口路由、游戏写权和相关生命周期，不登记文件、网络、音频、独立 UI 或纯数据线程，不提供万能 WriteMemory。当前仅有单一全局 Animation 拥有者与独立 Camera 拥有者。DLL、provider 和已启用 trampoline 均保留到进程结束。
 
 | 资源 | 上限与复用 |
 |---|---|
-| 基础 Core | 64 owner；native claim 按需扩展、模块期记录不复用；128 notice 槽允许同 owner 已关闭且排空后带新代次复用 |
-| Shared | 64 site、256 logical claim、256 listener；允许同 owner 已排空的 listener 槽带新代次复用；TLS 32 层，payload ≤256 字节 |
-| PointerPatch | 128 同时保留记录；恢复成功才带 generation 复用 |
-| Windows | 64 incarnation、128 route（允许同 owner 已排空的槽带新代次复用）、128 排队命令（消费后复用） |
-| Plugins | 128 服务槽；撤销或旧启用期结束且排空后复用；请求、结果各 ≤4096 字节，嵌套最多 16 层 |
+| 加载器 / 基础 Core | DLL 目录、owner、native claim、notice 按需扩展；owner/native claim 不复用；notice 允许同 owner 已关闭且排空后以新句柄复用 |
+| Shared | site、logical claim、listener 按需扩展；允许同 owner 已排空的 listener 记录以新句柄复用；TLS 32 层，payload ≤256 字节 |
+| PointerPatch | 记录按需扩展；恢复成功才以新句柄复用，不覆盖不确定的占用 |
+| Windows | incarnation、route 按需扩展；允许同 owner 已排空的 route 以新句柄复用；128 排队命令（消费后复用） |
+| Plugins | 服务记录按需扩展；撤销或旧启用期结束且排空后复用；请求、结果各 ≤4096 字节，嵌套最多 16 层 |
 | Diagnostics | 每个 owner 保留一份最近错误详情；历史记录由有界日志保存 |
 
 有界容量耗尽返回明确错误，不能静默覆盖旧记录。客户端自行维护游戏对象的 GC root、原值和恢复记录，Core 句柄不能替代原生对象生命期证明。

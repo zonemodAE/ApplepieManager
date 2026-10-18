@@ -6,7 +6,7 @@
 
 [English](README_EN.md) | 中文
 
-为《明日方舟：终末地》设计的 DLL 插件管理器。Manager 内置 Core，提供插件加载、独占与 typed 共享 Hook、受管指针槽及窗口路由，以及异步逻辑启停和动画/相机独立写权；界面位于游戏设置中的 **Applepie Manager** 页签，复用游戏原生控件，并提供 UID 隐藏功能。插件接入协议见 [SDK](sdk/README.md)。
+为《明日方舟：终末地》设计的 DLL 插件管理器。Manager 内置 Core，提供插件加载、独占与 typed 共享 Hook、受管指针槽及窗口路由，以及异步逻辑启停和动画/相机独立写权；并提供 UID 隐藏功能。插件接入协议见 [SDK](sdk/README.md)。
 
 ## 主要功能
 
@@ -22,7 +22,7 @@
 ## 用户协议与免责声明
 
 <details>
-<summary>在下载、安装或使用本插件（EIEM）之前，请您仔细阅读本协议。<b>使用本插件即代表您已完整阅读、充分理解并同意遵守以下所有条款。</b></summary>
+<summary>在下载、安装或使用本插件之前，请您仔细阅读本协议。<b>使用本插件即代表您已完整阅读、充分理解并同意遵守以下所有条款。</b></summary>
 
 ### 1. 开源许可与最终用户权利
 - 本插件基于 **AGPL-3.0** 许可证在 GitHub 平台完全开源。用户可在遵守该许可证的前提下自由使用、修改和分发本插件的源代码。
@@ -42,7 +42,12 @@
 
 ## 安装
 
-运行环境为 Windows x64。发布包中的三个 DLL 按以下位置安装到游戏目录（`Endfield.exe` 所在文件夹）；从源码构建时，这些文件位于 `bin/`：
+您可以在 [Releases](https://github.com/zonemodAE/ApplepieManager/releases) 下载最新发布版或从源代码自行编译。
+Release 提供Applepie Manager桌面管理器安装包（`*-setup.exe`）、免安装版（`ApplepieManager.exe`）和独立 DLL。
+
+打开Applepie Manager桌面管理器，选择游戏文件夹后点击“安装 / 更新到游戏”。
+
+也可以手动将三个 DLL 放到以下位置（游戏目录指 `Endfield.exe` 所在文件夹）；从源码构建时，这些文件位于 `bin/`：
 
 ```text
 applepie_manager.dll   → 游戏目录/plugin/applepie_manager.dll
@@ -50,19 +55,23 @@ vulkan-1.dll           → 游戏目录/vulkan-1.dll
 d3dcompiler_47.dll     → 游戏目录/d3dcompiler_47.dll
 ```
 
-> `d3dcompiler_47.dll`（DX）和 `vulkan-1.dll`（Vulkan）只引导 Manager，二者放其一或全放均可。插件通过 SDK 接入，不提供旧代理、旧业务包或旧宿主桥接。
+> `d3dcompiler_47.dll`（DX）和 `vulkan-1.dll`（Vulkan）只引导 Manager，二者放其一或全放均可。
 
 > 如果您**没有安装过此类型的插件**，您可能需要自行创建plugin文件夹。
 
 ## 使用方法
 
-1. 按上述方式安装后启动游戏。
+1. 按上述方式安装后点击"连接至塔卫二"启动游戏，或者手动启动游戏。
 2. 打开游戏的设置菜单，选择页签列表末尾新增的图标；选中后页面标题为 **Applepie Manager**。
 3. 点击插件右侧的“配置”进入设置，在“详情”中查看状态和错误信息。Active 显示绿色，未启用显示红色；“启用插件”同时控制本次启停和下次启动偏好，修改后自动保存。
-4. 基础设置修改后自动保存；按键直接按下录入，Esc 取消。文本和数值使用游戏原生输入弹窗，确认后保存。
+4. 基础设置修改后自动保存；按键直接按下录入，Esc 取消。
 5. 在“管理器设置”中切换语言、调整 UID/延迟/菜单/名片隐藏选项。
 
 已加载的插件 DLL 会保持常驻。更换 Manager 或已加载插件的 DLL 时，先退出游戏，替换后重新启动。
+
+## 插件安装
+
+您可以点击"插件下载"选项卡从 [GitHub 插件目录](https://github.com/zonemodAE/ApplepieManager/blob/master/catalog/plugins.json)下载插件。也可以在插件管理页面进行手动安装。
 
 ## 配置与升级
 
@@ -70,6 +79,7 @@ d3dcompiler_47.dll     → 游戏目录/d3dcompiler_47.dll
 | --- | --- |
 | Manager 语言、UID 隐藏和插件启动偏好 | 游戏目录下的 `plugin/config/applepie.manager.ini` |
 | 插件通过 SDK 注册的基础设置 | 对应插件 DLL 所在目录下的 `config/applepie.<插件ID>.ini` |
+| 桌面编辑器的字段描述 | 同目录的 `config/applepie.<插件ID>.schema.json`，由 Core 在注册设置时生成 |
 | Manager 默认配置模板 | 仓库中的 [templates/config/applepie.manager.ini](templates/config/applepie.manager.ini) |
 
 配置使用 UTF-8 扁平 `key=value` 格式，开关写为 `true/false`，无需 `[general]`、`[uid]` 或 `[plugins]` 分节。例如：
@@ -87,6 +97,8 @@ hide_ping=false
 从旧版升级时，如果新文件不存在，Manager 会迁入旧 `plugin/applepie_manager_config.txt` 中的语言、UID 和插件启用设置。旧文件保持原样；新文件一旦存在，后续只读写新文件。
 
 游戏内修改自动保存；在游戏外手动编辑配置后，下次启动时读取。保存失败会保留原文件，错误信息可在界面和日志中查看。
+
+桌面编辑器保留配置注释和未知键，保存时检查外部修改，防止覆盖较新的文件。启用插件一次后会生成字段描述。描述缺失或与当前 DLL 不匹配时，仍可按现有键值编辑；未注册基础设置的复杂配置由插件自己的界面管理。
 
 ## 插件开发
 

@@ -30,7 +30,7 @@ struct Record {
 };
 // Records and optional notification contexts live with their pinned DLL.
 std::mutex config_lock;
-std::unique_ptr<Record> records[65];
+std::vector<std::unique_ptr<Record>> records;
 int notify_filter(APH_Owner owner, EXCEPTION_POINTERS* e) {
     hub::hooks_api()->record_fault(owner, 0, e->ExceptionRecord->ExceptionCode,
         (uint64_t)(uintptr_t)e->ExceptionRecord->ExceptionAddress, APH_ORIGINAL_NOT_ENTERED, 0);
@@ -148,6 +148,54 @@ std::string encode(const APH_ConfigValue& v) {
         std::to_chars(buffer, buffer + sizeof(buffer), v.number);
     return std::string(buffer, r.ptr);
 }
+std::string json_string(const std::string& value) {
+    std::string out = "\"";
+    for (unsigned char c : value) {
+        if (c == '\\' || c == '"') { out += '\\'; out += char(c); }
+        else if (c < 32) {
+            const char hex[] = "0123456789abcdef";
+            out += "\\u00"; out += hex[c >> 4]; out += hex[c & 15];
+        } else out += char(c);
+    }
+    return out + '"';
+}
+DWORD describe_schema(const Record& r, const wchar_t* module_path, const std::string& id) noexcept {
+    try {
+        WIN32_FILE_ATTRIBUTE_DATA info{};
+        if (!GetFileAttributesExW(module_path, GetFileExInfoStandard, &info)) return GetLastError();
+        const uint64_t size = (uint64_t(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+        const uint64_t stamp = (uint64_t(info.ftLastWriteTime.dwHighDateTime) << 32) | info.ftLastWriteTime.dwLowDateTime;
+        std::string data = "{\"schemaVersion\":1,\"pluginId\":" + json_string(id) +
+            ",\"moduleSize\":" + std::to_string(size) + ",\"moduleWriteTime\":\"" + std::to_string(stamp) + "\",\"fields\":[";
+        bool first = true;
+        for (const auto& field : r.fields) {
+            const auto& f = field.desc;
+            if (!first) data += ',';
+            first = false;
+            data += "{\"key\":" + json_string(f.key) + ",\"label\":" + json_string(f.label) +
+                ",\"description\":" + json_string(f.description) + ",\"type\":" + std::to_string(f.type) +
+                ",\"defaultValue\":" + json_string(encode(f.initial));
+            if (f.type == APH_CONFIG_INT || f.type == APH_CONFIG_FLOAT) {
+                APH_ConfigValue number{}; number.type = APH_CONFIG_FLOAT;
+                number.number = f.minimum; data += ",\"minimum\":" + encode(number);
+                number.number = f.maximum; data += ",\"maximum\":" + encode(number);
+            }
+            if (f.type == APH_CONFIG_TEXT) data += ",\"textMaxBytes\":" + std::to_string(f.text_max_bytes);
+            data += ",\"options\":[";
+            bool first_option = true;
+            for (const auto& option : field.options) {
+                if (!first_option) data += ',';
+                first_option = false; data += json_string(option.value);
+            }
+            data += "]}";
+        }
+        data += "]}\n";
+        const auto path = r.directory + L"\\applepie." + std::wstring(id.begin(), id.end()) + L".schema.json";
+        // A one-time description for the offline editor. Never modifies the INI
+        // and never polls configuration or plugin memory.
+        return config_file::write(r.directory, path, data);
+    } catch (...) { return ERROR_NOT_ENOUGH_MEMORY; }
+}
 DWORD read_file(Record& r) {
     std::string contents;
     DWORD error = config_file::read(r.path, contents);
@@ -209,10 +257,12 @@ DWORD WINAPI save_worker(void* context) {
 APH_Result APH_CALL register_schema(APH_Owner owner, const APH_ConfigSchema* input) {
     APH_ConfigSchema schema{};
     if (!hub::services::input(input, &schema) || !schema.field_count ||
-        !schema.fields || !owner || owner > 64) return APH_E_ARGUMENT;
+        !schema.fields || !owner) return APH_E_ARGUMENT;
     if (!hub::owner_resident(owner)) return APH_E_REVOKED;
     try {
-        { std::lock_guard<std::mutex> guard(config_lock); if (records[owner]) return APH_E_DUPLICATE; }
+        { std::lock_guard<std::mutex> guard(config_lock);
+          if(owner>=records.size())records.resize(owner+1);
+          if (records[owner]) return APH_E_DUPLICATE; }
         auto r = std::make_unique<Record>();
         r->owner = owner; r->current.size = sizeof(r->current); r->current.field_count = schema.field_count;
         r->current.revision = 1;
@@ -246,18 +296,31 @@ APH_Result APH_CALL register_schema(APH_Owner owner, const APH_ConfigSchema* inp
             hub::error_detail(owner, "config-load", APH_E_IO, "basic settings", 0, 0, 0, error, "Cannot read configuration; file left unchanged");
             return APH_E_IO;
         }
-        std::lock_guard<std::mutex> guard(config_lock);
-        if (records[owner]) return APH_E_DUPLICATE;
-        records[owner] = std::move(r);
+        const auto committed = r.get();
+        {
+            std::lock_guard<std::mutex> guard(config_lock);
+            if (records[owner]) return APH_E_DUPLICATE;
+            records[owner] = std::move(r);
+        }
+        // Metadata failure must not prevent a valid plugin configuration from registering.
+        const DWORD description_error = describe_schema(*committed, module_path, id);
+        if (description_error) {
+            char message[192];
+            _snprintf_s(message, sizeof(message), _TRUNCATE, "[APH] config-description owner=%llu win32=%lu (configuration remains available)\n",
+                (unsigned long long)owner, description_error);
+            hub::log_line(message);
+        }
         manager_events::notify();
         return APH_OK;
-    } catch (...) { return APH_E_UNAVAILABLE; }
+    } catch (const std::bad_alloc&) { return APH_E_QUEUE_FULL; }
+      catch (const std::length_error&) { return APH_E_QUEUE_FULL; }
+      catch (...) { return APH_E_UNAVAILABLE; }
 }
 APH_Result APH_CALL field(APH_Owner owner, uint32_t index, uint32_t bytes, APH_ConfigField* out) {
     APH_ConfigField value{};
     {
         std::lock_guard<std::mutex> guard(config_lock);
-        if (!owner || owner > 64 || !records[owner]) return APH_E_UNAVAILABLE;
+        if (!owner || owner >= records.size() || !records[owner]) return APH_E_UNAVAILABLE;
         if (index >= records[owner]->current.field_count) return APH_E_ARGUMENT;
         value = records[owner]->fields[index].desc;
     }
@@ -267,7 +330,7 @@ APH_Result APH_CALL option(APH_Owner owner, uint32_t field_index, uint32_t index
     APH_ConfigOption value{};
     {
         std::lock_guard<std::mutex> guard(config_lock);
-        if (!owner || owner > 64 || !records[owner]) return APH_E_UNAVAILABLE;
+        if (!owner || owner >= records.size() || !records[owner]) return APH_E_UNAVAILABLE;
         const auto& fields = records[owner]->fields;
         if (field_index >= fields.size() || index >= fields[field_index].options.size()) return APH_E_ARGUMENT;
         value = fields[field_index].options[index];
@@ -276,7 +339,7 @@ APH_Result APH_CALL option(APH_Owner owner, uint32_t field_index, uint32_t index
 }
 APH_Result APH_CALL snapshot(APH_Owner owner, uint32_t bytes, APH_ConfigSnapshot* out, uint32_t capacity, APH_ConfigValue* values) {
     std::lock_guard<std::mutex> guard(config_lock);
-    if (!owner || owner > 64 || !records[owner]) return APH_E_UNAVAILABLE;
+    if (!owner || owner >= records.size() || !records[owner]) return APH_E_UNAVAILABLE;
     const auto& r = *records[owner];
     if (values ? capacity < r.values.size() : capacity != 0) return APH_E_ARGUMENT;
     if (bytes < sizeof(*out)) return APH_E_ABI;
@@ -284,9 +347,10 @@ APH_Result APH_CALL snapshot(APH_Owner owner, uint32_t bytes, APH_ConfigSnapshot
     return hub::services::output(bytes, out, r.current);
 }
 APH_Result APH_CALL save(APH_Owner owner, uint64_t revision, uint32_t count, const APH_ConfigValue* input) {
-    if (!owner || owner > 64 || !count) return APH_E_ARGUMENT;
+    if (!owner || !count) return APH_E_ARGUMENT;
     try {
         std::lock_guard<std::mutex> guard(config_lock);
+        if(owner>=records.size())return APH_E_UNAVAILABLE;
         auto r = records[owner].get();
         if (!r) return APH_E_UNAVAILABLE;
         if (count != r->current.field_count) return APH_E_ARGUMENT;
@@ -305,10 +369,11 @@ APH_Result APH_CALL save(APH_Owner owner, uint64_t revision, uint32_t count, con
     } catch (...) { return APH_E_UNAVAILABLE; }
 }
 APH_Result APH_CALL set_notifier(APH_Owner owner, APH_ConfigNotifyFn callback, void* context) {
-    if (!owner || owner > 64 || !callback || !hub::owner_callback(owner, (const void*)callback)) return APH_E_ARGUMENT;
+    if (!owner || !callback || !hub::owner_callback(owner, (const void*)callback)) return APH_E_ARGUMENT;
     if (!(hub::owner_flags(owner) & APH_PLUGIN_MODULE_OBSERVER)) return APH_E_CAPABILITY;
     if (!hub::owner_resident(owner)) return APH_E_REVOKED;
     std::lock_guard<std::mutex> guard(config_lock);
+    if(owner>=records.size())return APH_E_UNAVAILABLE;
     auto r = records[owner].get();
     if (!r) return APH_E_UNAVAILABLE;
     if (r->notify) return APH_E_DUPLICATE;

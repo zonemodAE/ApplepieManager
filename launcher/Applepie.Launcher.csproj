@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ApplepieManager</AssemblyName>
+    <RootNamespace>Applepie.Launcher</RootNamespace>
+    <Version Condition="'$(Version)' == ''">$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../src/version.rc')), '(?&lt;=VALUE &quot;ProductVersion&quot;, &quot;)[^&quot;]+').Value)</Version>
+    <Company>ApplepieManager</Company>
+    <Product>Applepie Manager</Product>
+    <Description>Applepie Manager desktop installer and plugin manager</Description>
+    <ApplicationIcon>../assets/icons/applepie-manager.ico</ApplicationIcon>
+    <ApplicationManifest Condition="'$(SetupExecutable)' == ''">app.manifest</ApplicationManifest>
+    <ApplicationManifest Condition="'$(SetupExecutable)' != ''">setup.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(SetupExecutable)' != ''">
+    <AssemblyName>ApplepieManagerSetup</AssemblyName>
+    <DefineConstants>$(DefineConstants);SETUP</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="../assets/icons/applepie-manager-256.png" Link="Assets/Logo.png" />
+    <EmbeddedResource Include="../bin/applepie_manager.dll" LogicalName="Payload.applepie_manager.dll" />
+    <EmbeddedResource Include="../bin/d3dcompiler_47.dll" LogicalName="Payload.d3dcompiler_47.dll" />
+    <EmbeddedResource Include="../bin/vulkan-1.dll" LogicalName="Payload.vulkan-1.dll" />
+    <EmbeddedResource Include="$(SetupExecutable)" LogicalName="Payload.ApplepieManager.exe" Condition="'$(SetupExecutable)' != ''" />
+  </ItemGroup>
+  <Target Name="CheckNativePayload" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('../bin/applepie_manager.dll') Or !Exists('../bin/d3dcompiler_47.dll') Or !Exists('../bin/vulkan-1.dll')" Text="Run the repository build.bat before building the launcher." />
+  </Target>
+</Project>

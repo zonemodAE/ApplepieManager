@@ -1,0 +1,26 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:sys="clr-namespace:System;assembly=System.Runtime">
+  <SolidColorBrush x:Key="Canvas" Color="#121715" />
+  <SolidColorBrush x:Key="Sidebar" Color="#0C120F" />
+  <SolidColorBrush x:Key="Panel" Color="#1B211E" />
+  <SolidColorBrush x:Key="Line" Color="#354039" />
+  <SolidColorBrush x:Key="Ink" Color="#E8E9DE" />
+  <SolidColorBrush x:Key="Muted" Color="#98A39A" />
+  <SolidColorBrush x:Key="Accent" Color="#DFFF00" />
+  <SolidColorBrush x:Key="AccentText" Color="#DFFF00" />
+  <SolidColorBrush x:Key="OnAccent" Color="#172000" />
+  <SolidColorBrush x:Key="HeroArrow" Color="#304000" />
+  <SolidColorBrush x:Key="ButtonSurface" Color="#252D27" />
+  <SolidColorBrush x:Key="ButtonLine" Color="#4B594D" />
+  <SolidColorBrush x:Key="NavigationSelected" Color="#252E20" />
+  <SolidColorBrush x:Key="NavigationHover" Color="#283027" />
+  <SolidColorBrush x:Key="InputSurface" Color="#111713" />
+  <SolidColorBrush x:Key="Caret" Color="#DFFF00" />
+  <SolidColorBrush x:Key="Selection" Color="#5B682F" />
+  <SolidColorBrush x:Key="ScrollThumb" Color="#4B594D" />
+  <SolidColorBrush x:Key="ProgressTrack" Color="#303A31" />
+  <SolidColorBrush x:Key="Positive" Color="#A5D993" />
+  <SolidColorBrush x:Key="Danger" Color="#E98778" />
+  <SolidColorBrush x:Key="Inactive" Color="#8D9696" />
+  <sys:String x:Key="ThemeSwitchText">白天模式</sys:String>
+  <Geometry x:Key="ThemeSwitchIcon">M14,10 A4,4 0 1 1 6,10 A4,4 0 1 1 14,10 M10,1 L10,3 M10,17 L10,19 M1,10 L3,10 M17,10 L19,10 M3.64,3.64 L5.05,5.05 M14.95,14.95 L16.36,16.36 M3.64,16.36 L5.05,14.95 M14.95,5.05 L16.36,3.64</Geometry>
+</ResourceDictionary>

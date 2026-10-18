@@ -17,7 +17,7 @@
 #include <vector>
 
 namespace {
-constexpr unsigned MaxOwners = 64, MaxSubscriptions = 128, MaxDepth = 32;
+constexpr unsigned MaxDepth = 32;
 constexpr LONG64 Closed = (LONG64)(UINT64_C(1) << 63);
 struct Owner {
     // IDs/modules are never recycled. Published (1) and terminally closed (2)
@@ -25,7 +25,7 @@ struct Owner {
     std::atomic<uint32_t> runtime_gate{0};
     APH_Manifest manifest;
     HMODULE module;
-    uint32_t state;
+    std::atomic<uint32_t> state{0};
     APH_Result result;
     uint64_t epoch;
     volatile LONG64 gate; // closed bit and admitted count in ONE CAS domain
@@ -55,18 +55,19 @@ struct Subscription {
     APH_SubscribeDesc desc;
     APH_Owner owner;
     uint64_t epoch;
-    uint32_t generation;
+    APH_Subscription token;
     volatile LONG64 gate;
     bool pending_notice;
 };
 struct CallFrame { APH_Owner owner; APH_Hook hook; Hook* record; bool admitted; };
 SRWLOCK registry = SRWLOCK_INIT;
-Owner owners[MaxOwners]{};
+hub::ResidentTable<Owner> owners;
 // Only the index grows. Published records stay at the same address for their
 // entire module lifetime, including backend work outside registry and leave_call.
 std::vector<std::unique_ptr<Hook>> hooks;
-Subscription subscriptions[MaxSubscriptions]{};
-unsigned owner_count, subscription_count;
+hub::ResidentTable<Subscription> subscriptions;
+hub::TokenIndex<Subscription> subscription_tokens;
+size_t owner_count, subscription_count;
 HANDLE wake_event;
 BoundedLog core_log;
 volatile LONG is_ready, backend_frozen;
@@ -137,10 +138,9 @@ template<class T> APH_Result output(uint32_t bytes, T* out, const T& value) {
 }
 void APH_CALL record_fault(APH_Owner id, APH_Hook hook, uint32_t code,
                            uint64_t address, uint32_t phase, uint32_t recoverable) {
-    // IDs are never recycled. Bounds use capacity, then atomically published module
-    // ownership is guaranteed by the issued token. No lock/log/allocation in filter.
-    if (!id || id > MaxOwners) return;
-    Owner* o = &owners[id - 1];
+    // IDs and published records are never recycled. No lock/log/allocation here.
+    Owner* o = id ? owners.get(id - 1) : nullptr;
+    if (!o || !o->runtime_gate.load(std::memory_order_acquire)) return;
     o->runtime_gate.fetch_or(2,std::memory_order_release);
     close_gate(&o->gate);
     if (!recoverable) InterlockedExchange(&o->unknown_fault, 1);
@@ -334,7 +334,7 @@ APH_Result APH_CALL owner_status(APH_Owner id, uint32_t bytes, APH_OwnerStatus* 
         }
         for (const auto& h : hooks)
             if (h->owner == id && h->state != APH_HOOK_RELEASED && h->state != APH_HOOK_FAILED) ++value.resource_count;
-        for (unsigned i = 0; i < subscription_count; ++i)
+        for(size_t i=0;i<subscription_count; ++i)
             if (subscriptions[i].owner == id && (!(read_gate(&subscriptions[i].gate) & Closed) || flights(&subscriptions[i].gate))) ++value.resource_count;
     } __finally { ReleaseSRWLockShared(&registry); }
     return output(bytes, out, value);
@@ -351,15 +351,17 @@ APH_Result APH_CALL subscribe(APH_Owner id, const APH_SubscribeDesc* input, APH_
         Owner* o = owner_at(id);
         if (!usable(o)) return APH_E_REVOKED;
         if (module != o->module) return APH_E_ARGUMENT;
-        unsigned slot=subscription_count;
-        if(o->manifest.flags&APH_PLUGIN_LIFECYCLE)for(unsigned i=0;i<subscription_count;++i)
+        size_t slot=subscription_count;
+        if(o->manifest.flags&APH_PLUGIN_LIFECYCLE)for(size_t i=0;i<subscription_count;++i)
             if(subscriptions[i].owner==id&&(read_gate(&subscriptions[i].gate)&Closed)&&!flights(&subscriptions[i].gate)){slot=i;break;}
-        if (slot == MaxSubscriptions) return APH_E_QUEUE_FULL;
-        const uint32_t generation=subscriptions[slot].generation+1;
-        APH_Subscription value = (uint64_t(generation)<<16)|(slot+1);
-        if (!safe_copy(out, &value, sizeof(value))) return APH_E_ARGUMENT;
+        Subscription* s = subscriptions.ensure(slot);
+        if (!s) return APH_E_QUEUE_FULL;
+        APH_Subscription value = subscription_tokens.issue(s,s->token);
+        if (!value) return APH_E_QUEUE_FULL;
+        if (!safe_copy(out, &value, sizeof(value))) { subscription_tokens.cancel(value,s->token); return APH_E_ARGUMENT; }
+        subscription_tokens.forget(s->token);
         if(slot==subscription_count)++subscription_count;
-        Subscription* s = &subscriptions[slot];*s={};s->generation=generation;
+        *s={};s->token=value;
         s->owner = id; s->desc = desc; s->epoch = o->epoch ? o->epoch : 1;
         s->pending_notice = true;
     } __finally { ReleaseSRWLockExclusive(&registry); }
@@ -370,9 +372,9 @@ APH_Result APH_CALL subscribe(APH_Owner id, const APH_SubscribeDesc* input, APH_
 APH_Result APH_CALL unsubscribe(APH_Owner owner, APH_Subscription id) {
     AcquireSRWLockExclusive(&registry);
     __try {
-        const unsigned slot=(unsigned)(id&65535u);
-        if (!slot || slot > subscription_count || subscriptions[slot - 1].owner != owner) return APH_E_ARGUMENT;
-        Subscription* s = &subscriptions[slot - 1];if(s->generation!=(id>>16))return APH_E_STALE;
+        Subscription* s = subscription_tokens.find(id);
+        if (!s) return APH_E_STALE;
+        if (s->owner != owner) return APH_E_ARGUMENT;
         close_gate(&s->gate); s->pending_notice = false;
         return flights(&s->gate) ? APH_PENDING : APH_OK;
     } __finally { ReleaseSRWLockExclusive(&registry); }
@@ -387,7 +389,7 @@ APH_Result APH_CALL copy_service(APH_Owner id, uint64_t service, uint32_t major,
 }
 void close_owner_resources(APH_Owner id, bool cleanup) {
     Owner* o = &owners[id - 1]; close_gate(&o->gate);
-    for (unsigned i = 0; i < subscription_count; ++i) if (subscriptions[i].owner == id) close_gate(&subscriptions[i].gate);
+    for(size_t i=0;i<subscription_count; ++i) if (subscriptions[i].owner == id) close_gate(&subscriptions[i].gate);
     for (size_t i = hooks.size(); i > 0; --i) if (hooks[i - 1]->owner == id) {
         Hook* h = hooks[i - 1].get();
         // Shared provider is a module-lifetime adapter, not this owner's business
@@ -413,7 +415,10 @@ void invoke_notice(Subscription* s, Owner* o) {
     }
 }
 void dispatch_notices() {
-    for (unsigned i = 0; i < MaxSubscriptions; ++i) {
+    AcquireSRWLockShared(&registry);
+    const size_t limit = subscription_count;
+    ReleaseSRWLockShared(&registry);
+    for (size_t i = 0; i < limit; ++i) {
         Subscription* s = nullptr; Owner* o = nullptr;
         AcquireSRWLockExclusive(&registry);
         __try {
@@ -427,37 +432,42 @@ void dispatch_notices() {
         if (s) invoke_notice(s, o); // plugin code is NEVER called under registry
     }
 }
+void process_faults() {
+    AcquireSRWLockExclusive(&registry);
+    __try {
+        for(size_t j=0;j<owner_count; ++j) {
+            Owner* o = &owners[j];
+            bool unknown = InterlockedCompareExchange(&o->unknown_fault, 0, 0) != 0;
+            if (InterlockedCompareExchange(&o->fault_record, 0, 0) == 2 &&
+                (!o->fault_handled || (unknown && o->state != APH_OWNER_NEEDS_RESTART))) {
+                o->fault_handled = true;
+                o->runtime_gate.fetch_or(2,std::memory_order_release);
+                o->state = o->recoverable && !unknown ? APH_OWNER_FAULTED : APH_OWNER_NEEDS_RESTART;
+                o->result = o->recoverable && !unknown ? APH_E_FAULT : APH_E_NEEDS_RESTART;
+                manager_events::notify();
+                close_owner_resources(j + 1, o->recoverable && !unknown);
+                char message[384];
+                _snprintf_s(message, sizeof(message), _TRUNCATE,
+                    "[APH] op=fault owner=%llu hook=%llu code=0x%08x address=%llx phase=%u thread=%u result=%d\n",
+                    (unsigned long long)(j + 1), (unsigned long long)o->fault_hook, o->fault_code,
+                    (unsigned long long)o->fault_address, o->fault_phase, o->fault_thread, o->result);
+                write_log(message);
+            }
+        }
+    } __finally { ReleaseSRWLockExclusive(&registry); }
+}
 DWORD WINAPI control_thread(void*) {
     for (;;) {
         WaitForSingleObject(wake_event, 20);
+        process_faults();
         // Bound this pass so concurrent requests cannot starve other services.
         AcquireSRWLockShared(&registry);
         const size_t scan_count = hooks.size();
         ReleaseSRWLockShared(&registry);
-        for (size_t i = 0; i < scan_count || i == 0; ++i) {
+        for (size_t i = 0; i < scan_count; ++i) {
             Hook* h = nullptr; uint32_t operation = 0;
             AcquireSRWLockExclusive(&registry);
             __try {
-                for (unsigned j = 0; j < owner_count; ++j) {
-                    Owner* o = &owners[j];
-                    bool unknown = InterlockedCompareExchange(&o->unknown_fault, 0, 0) != 0;
-                    if (InterlockedCompareExchange(&o->fault_record, 0, 0) == 2 &&
-                        (!o->fault_handled || (unknown && o->state != APH_OWNER_NEEDS_RESTART))) {
-                        o->fault_handled = true;
-                        o->runtime_gate.fetch_or(2,std::memory_order_release);
-                        o->state = o->recoverable && !unknown ? APH_OWNER_FAULTED : APH_OWNER_NEEDS_RESTART;
-                        o->result = o->recoverable && !unknown ? APH_E_FAULT : APH_E_NEEDS_RESTART;
-                        manager_events::notify();
-                        close_owner_resources(j + 1, o->recoverable && !unknown);
-                        char message[384];
-                        _snprintf_s(message, sizeof(message), _TRUNCATE,
-                            "[APH] op=fault owner=%u hook=%llu code=0x%08x address=%llx phase=%u thread=%u result=%d\n",
-                            j + 1, (unsigned long long)o->fault_hook, o->fault_code,
-                            (unsigned long long)o->fault_address, o->fault_phase, o->fault_thread, o->result);
-                        write_log(message);
-                    }
-                }
-                if (i >= scan_count) break; // process faults even with no hooks
                 h = hooks[i].get();
                 if (h->state == APH_HOOK_NEEDS_RESTART || h->state == APH_HOOK_RELEASED || h->state == APH_HOOK_FAILED || h->state == APH_HOOK_RETIRED_PINNED) continue;
                 if (backend_frozen) {
@@ -526,7 +536,7 @@ int lifecycle_filter(APH_Owner id, EXCEPTION_POINTERS* e) {
 namespace hub {
 APH_Owner find_owner(const char* id) {
     AcquireSRWLockShared(&registry);
-    __try { for(unsigned i=0;i<owner_count;++i)if(!strcmp(owners[i].manifest.id,id))return i+1; return 0; }
+    __try { for(size_t i=0;i<owner_count;++i)if(!strcmp(owners[i].manifest.id,id))return i+1; return 0; }
     __finally { ReleaseSRWLockShared(&registry); }
 }
 bool copy(void* dst, const void* src, size_t bytes) { return safe_copy(dst, src, bytes); }
@@ -567,7 +577,16 @@ bool owner_identity(APH_Owner id, APH_Manifest* manifest, HMODULE* module) {
     } __finally { ReleaseSRWLockShared(&registry); }
 }
 bool owner_runtime_open(APH_Owner id) {
-    return id&&id<=MaxOwners&&owners[id-1].runtime_gate.load(std::memory_order_acquire)==1;
+    const Owner* o = id ? owners.get(id - 1) : nullptr;
+    return o && o->runtime_gate.load(std::memory_order_acquire)==1;
+}
+unsigned char owner_failure(APH_Owner id) {
+    const Owner* o = id ? owners.get(id - 1) : nullptr;
+    if (!o || !o->runtime_gate.load(std::memory_order_acquire)) return 0;
+    const auto state = o->state.load(std::memory_order_acquire);
+    if (state == APH_OWNER_NEEDS_RESTART) return 2;
+    if (state == APH_OWNER_FAILED || state == APH_OWNER_FAULTED) return 1;
+    return 0;
 }
 uint32_t owner_flags(APH_Owner id) {
     AcquireSRWLockShared(&registry);
@@ -596,7 +615,7 @@ APH_Result suspend_owner(APH_Owner id) {
         if(o->state==APH_OWNER_DISABLING)return APH_PENDING;
         if(o->state!=APH_OWNER_ACTIVE&&o->state!=APH_OWNER_ENABLING)return APH_E_BUSY;
         close_gate(&o->gate);o->state=APH_OWNER_DISABLING;o->result=APH_PENDING;
-        for(unsigned i=0;i<subscription_count;++i)if(subscriptions[i].owner==id){close_gate(&subscriptions[i].gate);subscriptions[i].pending_notice=false;}
+        for(size_t i=0;i<subscription_count;++i)if(subscriptions[i].owner==id){close_gate(&subscriptions[i].gate);subscriptions[i].pending_notice=false;}
     } __finally {ReleaseSRWLockExclusive(&registry);}
     SetEvent(wake_event);return APH_PENDING;
 }
@@ -625,7 +644,8 @@ bool owner_callback(APH_Owner id, const void* callback) {
     __finally { ReleaseSRWLockShared(&registry); }
 }
 void resource_delta(APH_Owner id, int32_t delta) {
-    if (id && id <= MaxOwners) InterlockedExchangeAdd(&owners[id - 1].extra_resources, delta);
+    Owner* o = id ? owners.get(id - 1) : nullptr;
+    if (o && o->runtime_gate.load(std::memory_order_acquire)) InterlockedExchangeAdd(&o->extra_resources, delta);
 }
 void log_line(const char* message) { write_log(message); }
 void diagnostic(const char* operation, APH_Owner owner, APH_Hook hook, APH_Result result) {
@@ -672,9 +692,9 @@ APH_Result initialize() {
 APH_Owner add_owner(const APH_Manifest& manifest, HMODULE module) {
     AcquireSRWLockExclusive(&registry);
     __try {
-        if (owner_count == MaxOwners) return 0;
-        for (unsigned i = 0; i < owner_count; ++i) if (!strcmp(owners[i].manifest.id, manifest.id)) return 0;
-        Owner* o = &owners[owner_count];
+        for (size_t i = 0; i < owner_count; ++i) if (!strcmp(owners[i].manifest.id, manifest.id)) return 0;
+        Owner* o = owners.ensure(owner_count);
+        if (!o) return 0;
         o->manifest = manifest; o->module = module; o->gate = Closed;
         o->state = APH_OWNER_ATTACHED; o->result = APH_PENDING;
         o->runtime_gate.fetch_or(1,std::memory_order_release);

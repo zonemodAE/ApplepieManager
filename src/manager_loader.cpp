@@ -8,16 +8,30 @@
 #include <cstring>
 #include <cwchar>
 #include <algorithm>
+#include <vector>
 
 namespace {
 volatile LONG boot_state = APH_COLD, boot_result = APH_PENDING, scan_count;
 SRWLOCK plugin_lock = SRWLOCK_INIT;
-loader::Plugin plugins[128]{};
+std::vector<loader::Plugin> plugins;
 unsigned plugin_count;
-bool desired[128]{}, requested[128]{};
+std::vector<unsigned char> desired, requested;
 HANDLE loader_wake;
 wchar_t plugin_directory[MAX_PATH]{};
 manager_config::Settings initial_preferences;
+
+// Catalog growth occurs only during preflight, before management/UI workers.
+bool append_plugin(const wchar_t* filename) noexcept {
+    try {
+        desired.resize(size_t(plugin_count)+1);
+        requested.resize(size_t(plugin_count)+1);
+        plugins.emplace_back();
+        wcscpy_s(plugins.back().filename,filename);
+        ++plugin_count;
+        return true;
+    } catch(const std::bad_alloc&) { return false; }
+      catch(const std::length_error&) { return false; }
+}
 
 bool range(uint32_t rva, size_t bytes, uint32_t image_size) {
     return rva < image_size && bytes <= image_size - rva;
@@ -138,16 +152,25 @@ int dependency_index(const char* id) {
         !strcmp(plugins[i].manifest.id,id)){found=(int)i;break;}
     ReleaseSRWLockShared(&plugin_lock);return found;
 }
-bool cycle_path(unsigned index,unsigned goal,bool* seen) {
-    if(seen[index])return false;seen[index]=true;
-    const auto& p=plugins[index];
-    if(!valid_info(p)||!valid_manifest(p.manifest))return false;
-    for(unsigned i=0;i<p.info.dependency_count;++i) {
-        const auto& d=p.info.dependencies[i];if(d.flags&APH_DEP_OPTIONAL)continue;
-        int target=dependency_index(d.id);if(target<0)continue;
-        if((unsigned)target==goal||cycle_path((unsigned)target,goal,seen))return true;
-    }
-    return false;
+APH_Result check_cycle(unsigned index) noexcept {
+    try {
+        std::vector<unsigned char> seen(plugin_count);
+        std::vector<unsigned> pending{index};
+        while(!pending.empty()) {
+            const auto current=pending.back();pending.pop_back();
+            if(seen[current])continue;seen[current]=true;
+            const auto& p=plugins[current];
+            if(!valid_info(p)||!valid_manifest(p.manifest))continue;
+            for(unsigned i=0;i<p.info.dependency_count;++i) {
+                const auto& d=p.info.dependencies[i];if(d.flags&APH_DEP_OPTIONAL)continue;
+                const auto target=dependency_index(d.id);if(target<0)continue;
+                if((unsigned)target==index)return APH_E_CYCLE;
+                if(!seen[target])pending.push_back((unsigned)target);
+            }
+        }
+        return APH_OK;
+    } catch(const std::bad_alloc&) { return APH_E_QUEUE_FULL; }
+      catch(const std::length_error&) { return APH_E_QUEUE_FULL; }
 }
 APH_Result dependencies_ready(loader::Plugin& p) {
     for(unsigned i=0;i<p.info.dependency_count;++i) {
@@ -240,7 +263,13 @@ void load_plugin(unsigned i,bool late) {
             }
         }
         p.owner = hub::add_owner(p.manifest, p.module);
-        if (!p.owner) { p.state = loader::Duplicate; p.result = APH_E_DUPLICATE; save_plugin(i, p); return; }
+        if (!p.owner) {
+            const bool ownerExists=hub::find_owner(p.manifest.id)!=0;
+            p.state=ownerExists?loader::Duplicate:loader::AttachFailed;
+            p.result=ownerExists?APH_E_DUPLICATE:APH_E_QUEUE_FULL;
+            explain(p,"owner",ownerExists?"Duplicate stable plugin ID":"Cannot allocate owner record");
+            save_plugin(i,p);return;
+        }
         explain(p,"attach","");
         p.result = hub::attach(p.owner, attach);
         if (p.result != APH_OK) {
@@ -251,27 +280,26 @@ void load_plugin(unsigned i,bool late) {
         p.attached = true; p.state = loader::Attached; save_plugin(i, p);
         enable_plugin(i,p);
 }
-void load_plugins() {
+APH_Result load_plugins() {
     InterlockedIncrement(&scan_count);
     wchar_t pattern[MAX_PATH];
     swprintf_s(pattern, L"%s\\*.dll", plugin_directory);
     WIN32_FIND_DATAW entry{};
     HANDLE find = FindFirstFileW(pattern, &entry);
-    if (find == INVALID_HANDLE_VALUE) return;
+    if (find == INVALID_HANDLE_VALUE) return APH_OK;
     __try {
         do {
             if ((entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !_wcsicmp(entry.cFileName, L"applepie_manager.dll")) continue;
             AcquireSRWLockExclusive(&plugin_lock);
             __try {
-                if (plugin_count == _countof(plugins)) break;
-                wcscpy_s(plugins[plugin_count++].filename, entry.cFileName);
+                if (!append_plugin(entry.cFileName)) return APH_E_QUEUE_FULL;
             } __finally { ReleaseSRWLockExclusive(&plugin_lock); }
         } while (FindNextFileW(find, &entry));
     } __finally { FindClose(find); }
     // Deterministic winner for duplicate stable IDs. No plugin code during sort.
     AcquireSRWLockExclusive(&plugin_lock);
     __try {
-        std::sort(plugins, plugins + plugin_count, [](const loader::Plugin& a, const loader::Plugin& b) {
+        std::sort(plugins.begin(), plugins.end(), [](const loader::Plugin& a, const loader::Plugin& b) {
             return _wcsicmp(a.filename, b.filename) < 0;
         });
     } __finally { ReleaseSRWLockExclusive(&plugin_lock); }
@@ -293,7 +321,8 @@ void load_plugins() {
         save_plugin(i,p);
     }
     for(unsigned i=0;i<plugin_count;++i)if(plugins[i].has_info&&plugins[i].state!=loader::Rejected&&plugins[i].state!=loader::Duplicate) {
-        bool seen[128]{};if(cycle_path(i,i,seen)){auto p=plugins[i];p.state=loader::Rejected;p.result=APH_E_CYCLE;
+        const auto checked=check_cycle(i);if(checked==APH_E_QUEUE_FULL)return checked;
+        if(checked==APH_E_CYCLE){auto p=plugins[i];p.state=loader::Rejected;p.result=checked;
             explain(p,"dependencies","Required dependency cycle");save_plugin(i,p);}
     }
     for(unsigned pass=0;pass<plugin_count;++pass) {
@@ -303,6 +332,7 @@ void load_plugins() {
         }
         if(!progress)break;
     }
+    return APH_OK;
 }
 DWORD WINAPI management_thread(void*) {
     for(;;) {
@@ -335,7 +365,7 @@ DWORD WINAPI management_thread(void*) {
             loader::snapshot(i,&p);
             if((want&&p.state==loader::Active)||(!want&&p.state==loader::Disabled)||p.state==loader::NeedsRestart||p.state==loader::Failed||(p.result<0&&p.state!=loader::WaitingDependencies)) {
                 AcquireSRWLockExclusive(&plugin_lock);
-                if(desired[i]==want)requested[i]=false;
+                if((desired[i]!=0)==want)requested[i]=false;
                 ReleaseSRWLockExclusive(&plugin_lock);
                 manager_events::notify();
             }
@@ -369,7 +399,11 @@ DWORD WINAPI bootstrap_thread(void*) {
             initial_preferences.load_error, initial_preferences.save_error);
         hub::log_line(message);
     }
-    load_plugins();
+    result=load_plugins();
+    if(result!=APH_OK) {
+        InterlockedExchange(&boot_result,result);InterlockedExchange(&boot_state,APH_BOOT_FAILED);
+        hub::diagnostic("catalog-failed",0,0,result);return 1;
+    }
     InterlockedExchange(&boot_state, APH_SCANNED);
     loader_wake=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     HANDLE manager=loader_wake?CreateThread(nullptr,0,management_thread,nullptr,0,nullptr):nullptr;

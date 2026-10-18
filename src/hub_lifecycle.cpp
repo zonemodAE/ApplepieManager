@@ -5,7 +5,7 @@ struct Life {APH_LifecycleDesc desc;uint64_t epoch,deadline;bool registered,noti
 struct Writer {APH_Owner owner;APH_WriteLease id;APH_Access access;uint32_t state,flights;APH_Result result;uint64_t deadline;};
 struct Frame {APH_WriteCall call;bool cleanup;};
 SRWLOCK lock=SRWLOCK_INIT;
-Life lives[65]{};Writer writers[2]{};uint64_t next_lease,next_call;
+hub::ResidentTable<Life> lives;Writer writers[2]{};uint64_t next_lease,next_call;
 bool target_changing=false;APH_RuntimeSnapshot target_before{};
 __declspec(thread) Frame frames[32];
 __declspec(thread) unsigned depth;
@@ -13,14 +13,15 @@ __declspec(thread) APH_Owner restoring_owner;
 __declspec(thread) uint64_t restoring_epoch;
 __declspec(thread) unsigned restoring_domains;
 unsigned index_of(unsigned domain){return domain==APH_ANIMATION?0:domain==APH_CAMERA?1:2;}
-uint32_t timeout(APH_Owner o){return lives[o].registered?lives[o].desc.timeout_ms:10000;}
+uint32_t timeout(APH_Owner o){auto l=lives.get(o);return l&&l->registered?l->desc.timeout_ms:10000;}
 APH_Result APH_CALL registration(APH_Owner o,const APH_LifecycleDesc* input) {
     APH_LifecycleDesc d{};
-    if(!o||o>64||!(hub::owner_flags(o)&APH_PLUGIN_LIFECYCLE)||!hub::owner_usable(o)||!hub::services::input(input,&d))return APH_E_ARGUMENT;
+    if(!o||!(hub::owner_flags(o)&APH_PLUGIN_LIFECYCLE)||!hub::owner_usable(o)||!hub::services::input(input,&d))return APH_E_ARGUMENT;
     if(d.timeout_ms<100||d.timeout_ms>60000||!hub::owner_callback(o,(void*)d.restore)||
         (d.disabling&&!hub::owner_callback(o,(void*)d.disabling)))return APH_E_ARGUMENT;
     AcquireSRWLockExclusive(&lock);
-    __try {Life& l=lives[o];if(l.registered)return APH_E_DUPLICATE;l.desc=d;l.registered=true;return APH_OK;}
+    __try {if(!lives.ensure(o))return APH_E_QUEUE_FULL;
+        Life& l=lives[o];if(l.registered)return APH_E_DUPLICATE;l.desc=d;l.registered=true;return APH_OK;}
     __finally {ReleaseSRWLockExclusive(&lock);}
 }
 APH_Result APH_CALL complete_enable(APH_Owner o,uint64_t epoch,APH_Result result) {
@@ -105,7 +106,7 @@ APH_Result finish_checkpoint_locked(APH_Owner o,const APH_Cleanup& cleanup,const
     return releasing?APH_PENDING:APH_OK;
 }
 APH_Result checkpoint_impl(APH_Owner o,unsigned reason) {
-    if(!o||o>64||restoring_owner)return APH_E_BUSY;
+    if(!o||!lives.get(o)||restoring_owner)return APH_E_BUSY;
     APH_Cleanup cleanup{sizeof(cleanup),reason,0,0,{sizeof(APH_Access),0,0,0,0}};
     APH_LifecycleDesc desc{};Writer captured[2]{};
     AcquireSRWLockExclusive(&lock);
@@ -252,9 +253,10 @@ void notify_disabling(APH_Owner o,APH_DisablingFn fn,uint64_t epoch,void* contex
 }
 namespace hub {
 uint64_t begin_enable(APH_Owner o) {
-    if(!o||o>64)return 0;
+    if(!o||!owner_resident(o))return 0;
     AcquireSRWLockExclusive(&lock);
     __try {
+        if(!lives.ensure(o))return 0;
         const uint64_t epoch=start_enable(o);
         if(epoch) {
             Life& l=lives[o];l.epoch=epoch;l.notified=false;l.closing=false;
@@ -264,7 +266,7 @@ uint64_t begin_enable(APH_Owner o) {
     } __finally {ReleaseSRWLockExclusive(&lock);}
 }
 APH_Result finish_enable(APH_Owner o,APH_Result result,uint64_t epoch) {
-    if(!o||o>64)return APH_E_ARGUMENT;
+    if(!o||!lives.get(o))return APH_E_ARGUMENT;
     AcquireSRWLockExclusive(&lock);
     __try {
         Life& l=lives[o];
@@ -281,14 +283,15 @@ APH_Result finish_enable(APH_Owner o,APH_Result result,uint64_t epoch) {
 namespace hub::services {
 const APH_LifecycleApi* lifecycle_api(){return &lifecycle;}
 const APH_WriteApi* write_api(){return &writes;}
-bool registered(APH_Owner o){if(!o||o>64)return false;AcquireSRWLockShared(&lock);bool r=lives[o].registered;ReleaseSRWLockShared(&lock);return r;}
+bool registered(APH_Owner o){if(!o)return false;AcquireSRWLockShared(&lock);auto l=lives.get(o);bool r=l&&l->registered;ReleaseSRWLockShared(&lock);return r;}
 bool access_cleanup(APH_Owner o,uint64_t epoch){return restoring_owner==o&&restoring_epoch==epoch;}
 bool restoring_runtime(){return restoring_owner!=0;}
 bool has_write(APH_Owner o,unsigned domain){return (current(o)&domain)==domain;}
 bool writes_pending(APH_Owner o){AcquireSRWLockShared(&lock);bool r=writers[0].owner==o||writers[1].owner==o;ReleaseSRWLockShared(&lock);return r;}
 void epoch_close(APH_Owner o){hub::services::shared_epoch_close(o);hub::services::window_epoch_close(o);}
 void tick() {
-    for(APH_Owner o=1;o<=64;++o) {
+    const size_t limit=lives.size();
+    for(APH_Owner o=1;o<limit;++o) {
         if(!registered(o))continue;
         APH_OwnerStatus s{};if(hub::api()->owner_status(o,sizeof(s),&s)!=APH_OK)continue;
         APH_RuntimeSnapshot runtime{};

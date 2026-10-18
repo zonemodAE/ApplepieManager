@@ -108,13 +108,7 @@ APH_Result finish_target_change(const APH_RuntimeSnapshot& before) {
 namespace hub {
 bool runtime_mutations_allowed(){return state.load(std::memory_order_acquire)<APH_RUNTIME_STOPPING;}
 void extensions_tick() {
-    unsigned char failed[65]{};
-    for(unsigned i=1;i<=64;++i) {
-        APH_OwnerStatus s{};if(api()->owner_status(i,sizeof(s),&s)!=APH_OK)break;
-        if(s.state==APH_OWNER_FAILED||s.state==APH_OWNER_FAULTED)failed[i]=1;
-        else if(s.state==APH_OWNER_NEEDS_RESTART)failed[i]=2;
-    }
-    hub::services::shared_tick(failed);hub::services::window_tick(failed);hub::services::tick();
+    hub::services::shared_tick();hub::services::window_tick();hub::services::tick();
     // Pointer leases are deliberately excluded: a temporary wrapper may still
     // be running. Its __finally owns conditional restore and the admission count.
 }
@@ -151,22 +145,23 @@ APH_Result copy_extension(APH_Owner owner,uint64_t service,uint32_t major,uint32
 
 namespace {
 SRWLOCK detail_lock=SRWLOCK_INIT;
-APH_ErrorDetail errors[65]{};
+hub::ResidentTable<APH_ErrorDetail> errors;
 APH_Result APH_CALL last_error(APH_Owner owner,uint32_t bytes,APH_ErrorDetail* out) {
-    if(!owner||owner>64)return APH_E_ARGUMENT;
+    if(!owner)return APH_E_ARGUMENT;
     APH_ErrorDetail d{};
-    AcquireSRWLockShared(&detail_lock);d=errors[owner];ReleaseSRWLockShared(&detail_lock);
+    AcquireSRWLockShared(&detail_lock);if(auto e=errors.get(owner))d=*e;ReleaseSRWLockShared(&detail_lock);
     if(!d.size)return APH_E_UNAVAILABLE;
     return hub::services::output(bytes,out,d);
 }
 APH_Result APH_CALL report_error(APH_Owner owner,const APH_ErrorDetail* input) {
     APH_ErrorDetail d{};
-    if(!owner||owner>64||!hub::services::input(input,&d)||d.result>=0||
+    if(!owner||!hub::services::input(input,&d)||d.result>=0||
         !memchr(d.operation,0,sizeof(d.operation))||!memchr(d.resource,0,sizeof(d.resource))||
         !memchr(d.message,0,sizeof(d.message)))return APH_E_ARGUMENT;
     APH_OwnerStatus status{};if(hub::api()->owner_status(owner,sizeof(status),&status)!=APH_OK)return APH_E_ARGUMENT;
     d.size=sizeof(d);d.timestamp_ms=GetTickCount64();
     AcquireSRWLockExclusive(&detail_lock);
+    if(!errors.ensure(owner)){ReleaseSRWLockExclusive(&detail_lock);return APH_E_QUEUE_FULL;}
     auto previous=errors[owner];previous.timestamp_ms=d.timestamp_ms;
     const bool repeated=memcmp(&previous,&d,sizeof(d))==0;
     errors[owner]=d;ReleaseSRWLockExclusive(&detail_lock);
@@ -182,7 +177,7 @@ const APH_DiagnosticsApi detail_api{sizeof(detail_api),1,last_error,report_error
 // handles and provider epochs make cached handles stale across republication.
 SRWLOCK service_lock=SRWLOCK_INIT;
 struct PluginService {APH_Owner owner;APH_PluginService serial;APH_ServiceDesc desc;uint32_t flights;bool closed;};
-PluginService service_records[128]{};
+hub::ResidentTable<PluginService> service_records;
 uint64_t service_serial;
 __declspec(thread) unsigned service_depth;
 bool service_active(const PluginService& r) {
@@ -215,7 +210,8 @@ APH_Result APH_CALL publish_service(APH_Owner owner,const APH_ServiceDesc* input
                     (prior.state!=APH_OWNER_ACTIVE&&prior.state!=APH_OWNER_ENABLING))free=&r;
             }
         }
-        if(!free)return APH_E_QUEUE_FULL;
+        if(!free)free=service_records.ensure(service_records.size());
+        if(!free||service_serial==UINT64_MAX)return APH_E_QUEUE_FULL;
         const auto serial=++service_serial;
         if(!hub::copy(out,&serial,sizeof(serial)))return APH_E_ARGUMENT;
         *free={owner,serial,d,0,false};return APH_OK;

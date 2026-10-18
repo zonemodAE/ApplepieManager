@@ -2,7 +2,7 @@
 #include "hub_internal.h"
 #include <cstring>
 namespace {
-constexpr unsigned Sites = 64, Claims = 256, Listeners = 256, Depth = 32;
+constexpr unsigned Depth = 32;
 struct Site {
     APH_SharedRequest request;
     APH_Owner provider_owner;
@@ -11,20 +11,23 @@ struct Site {
     bool retired;
     volatile LONG faulted;
 };
-struct Claim { APH_Owner owner; uint64_t key; unsigned site; bool active, released; APH_NativeProc entry; };
+struct Claim { APH_Owner owner; uint64_t key; size_t site; bool active, released; APH_NativeProc entry; volatile LONG published; };
 struct Listener {
     APH_SharedListen desc;
     APH_SharedClaim claim;
     APH_Owner owner;
     uint64_t epoch;
-    uint64_t generation;
+    APH_Subscription token;
     volatile LONG64 gate;
     bool counted;
 };
-struct Frame { uint64_t invocation; unsigned site,flags; APH_HookCall native; bool before, after, suppress; };
+struct Frame { uint64_t invocation; size_t site; unsigned flags; APH_HookCall native; bool before, after, suppress; };
 SRWLOCK lock = SRWLOCK_INIT;
-Site sites[Sites]{}; Claim claims[Claims]{}; Listener listeners[Listeners]{};
-unsigned site_count, claim_count, listener_count;
+hub::ResidentTable<Site> sites;
+hub::ResidentTable<Claim> claims;
+hub::ResidentTable<Listener> listeners;
+hub::TokenIndex<Listener> listener_tokens;
+size_t site_count, claim_count, listener_count;
 volatile LONG64 sequence;
 __declspec(thread) Frame frames[Depth];
 __declspec(thread) unsigned depth;
@@ -50,7 +53,7 @@ APH_Result request_impl(APH_Owner owner, const APH_SharedRequest* input, APH_Sha
         image_size != r.native.module_image_size) return APH_E_BUILD;
     AcquireSRWLockExclusive(&lock);
     __try {
-        for (unsigned i=0;i<claim_count;++i) if (claims[i].owner==owner && claims[i].key==r.native.request_key) {
+        for(size_t i=0;i<claim_count;++i) if (claims[i].owner==owner && claims[i].key==r.native.request_key) {
             Site& s=sites[claims[i].site];
             if (s.request.native.target != r.native.target || !compatible(s.request,r) ||
                 claims[i].entry!=r.native.native_entry || s.request.native.module_timestamp!=r.native.module_timestamp ||
@@ -59,9 +62,9 @@ APH_Result request_impl(APH_Owner owner, const APH_SharedRequest* input, APH_Sha
             APH_SharedClaim value=i+1;
             return hub::copy(out,&value,sizeof(value)) ? APH_OK : APH_E_ARGUMENT;
         }
-        if (claim_count==Claims) return APH_E_QUEUE_FULL;
-        unsigned site=site_count;
-        for (unsigned i=0;i<site_count;++i) if (sites[i].request.native.target==r.native.target) {site=i;break;}
+        if (!claims.ensure(claim_count)) return APH_E_QUEUE_FULL;
+        size_t site=site_count;
+        for(size_t i=0;i<site_count;++i) if (sites[i].request.native.target==r.native.target) {site=i;break;}
         if (site < site_count) {
             Site& s=sites[site];
             if (s.retired||InterlockedCompareExchange(&s.faulted,0,0)) return APH_E_CONFLICT;
@@ -70,8 +73,8 @@ APH_Result request_impl(APH_Owner owner, const APH_SharedRequest* input, APH_Sha
             if (s.request.native.module_timestamp!=r.native.module_timestamp ||
                 s.request.native.module_image_size!=r.native.module_image_size) return APH_E_BUILD;
         } else {
-            if (site_count==Sites) return APH_E_QUEUE_FULL;
             if (!r.native.native_entry) return APH_E_UNAVAILABLE;
+            if (!sites.ensure(site)) return APH_E_QUEUE_FULL;
             Site& s=sites[site];
             APH_Result result=hub::shared_native_request(owner,&r.native,&s.native);
             if (result<0) return result;
@@ -88,7 +91,9 @@ APH_Result request_impl(APH_Owner owner, const APH_SharedRequest* input, APH_Sha
             }
             return APH_E_ARGUMENT;
         }
-        claims[claim_count++]={owner,r.native.request_key,site,false,false,r.native.native_entry};
+        Claim& claim=claims[claim_count++];
+        claim={owner,r.native.request_key,site,false,false,r.native.native_entry,0};
+        InterlockedExchange(&claim.published,1);
         hub::resource_delta(owner,1);
         return APH_PENDING;
     } __finally {ReleaseSRWLockExclusive(&lock);}
@@ -110,9 +115,9 @@ APH_Result APH_CALL query(APH_Owner owner, APH_SharedClaim id, uint32_t bytes, A
         value.size=sizeof(value);value.state=native.state;value.result=native.result;
         value.is_provider=s.provider_claim==id;value.native_hook=s.native;
         value.original=value.is_provider?native.original:nullptr;value.in_flight=native.in_flight;
-        for(unsigned i=0;i<claim_count;++i)if(claims[i].site==c->site&&!claims[i].released)++value.members;
+        for(size_t i=0;i<claim_count;++i)if(claims[i].site==c->site&&!claims[i].released)++value.members;
         if(c->released){value.state=APH_HOOK_RELEASED;value.result=APH_OK;
-            for(unsigned i=0;i<listener_count;++i)if(listeners[i].claim==id&&hub::services::count(&listeners[i].gate))value.result=APH_PENDING;
+            for(size_t i=0;i<listener_count;++i)if(listeners[i].claim==id&&hub::services::count(&listeners[i].gate))value.result=APH_PENDING;
         }
         else if(!c->active&&native.state==APH_HOOK_ACTIVE)value.state=APH_HOOK_PREPARED;
         if(!c->released) {
@@ -150,9 +155,9 @@ APH_Result APH_CALL release(APH_Owner owner, APH_SharedClaim id) {
         Claim* c=claim_for(owner,id);if(!c)return APH_E_ARGUMENT;
         if(!c->released){c->released=true;c->active=false;hub::resource_delta(owner,-1);}
         bool pending=false;
-        for(unsigned i=0;i<listener_count;++i)if(listeners[i].claim==id){close_listener(listeners[i]);pending|=hub::services::count(&listeners[i].gate)!=0;}
+        for(size_t i=0;i<listener_count;++i)if(listeners[i].claim==id){close_listener(listeners[i]);pending|=hub::services::count(&listeners[i].gate)!=0;}
         bool any=false;
-        for(unsigned i=0;i<claim_count;++i)if(claims[i].site==c->site&&!claims[i].released)any=true;
+        for(size_t i=0;i<claim_count;++i)if(claims[i].site==c->site&&!claims[i].released)any=true;
         if(!any){Site& s=sites[c->site];s.retired=true;if(InterlockedCompareExchange(&s.faulted,0,0))return APH_E_NEEDS_RESTART;
             APH_Result r=hub::hooks_api()->release_hook(s.provider_owner,s.native);if(r!=APH_OK)return r;}
         return pending?APH_PENDING:APH_OK;
@@ -170,35 +175,37 @@ APH_Result APH_CALL listen(APH_Owner owner, APH_SharedClaim id, const APH_Shared
         Site& s=sites[c->site];
         if(desc.role==APH_CONTROLLER) {
             if(s.request.original_policy!=APH_CONTROLLED_VOID||!(desc.phases&APH_BEFORE))return APH_E_CONTRACT;
-            for(unsigned i=0;i<listener_count;++i) {
+            for(size_t i=0;i<listener_count;++i) {
                 Listener& l=listeners[i];
                 if(claims[l.claim-1].site==c->site&&l.desc.role==APH_CONTROLLER&&
                     (!(hub::services::read(&l.gate)&hub::services::Closed)||hub::services::count(&l.gate)))return APH_E_CONFLICT;
             }
         }
-        unsigned slot=listener_count;
-        if(hub::owner_flags(owner)&APH_PLUGIN_LIFECYCLE)for(unsigned i=0;i<listener_count;++i)
+        size_t slot=listener_count;
+        if(hub::owner_flags(owner)&APH_PLUGIN_LIFECYCLE)for(size_t i=0;i<listener_count;++i)
             if(listeners[i].owner==owner&&(hub::services::read(&listeners[i].gate)&hub::services::Closed)&&!hub::services::count(&listeners[i].gate)){slot=i;break;}
-        if(slot==Listeners)return APH_E_QUEUE_FULL;
-        Listener& l=listeners[slot];uint64_t generation=l.generation+1;
-        APH_Subscription value=(generation<<16)|(slot+1);if(!hub::copy(out,&value,sizeof(value)))return APH_E_ARGUMENT;
+        if(!listeners.ensure(slot))return APH_E_QUEUE_FULL;
+        Listener& l=listeners[slot];APH_Subscription value=listener_tokens.issue(&l,l.token);
+        if(!value)return APH_E_QUEUE_FULL;
+        if(!hub::copy(out,&value,sizeof(value))){listener_tokens.cancel(value,l.token);return APH_E_ARGUMENT;}
+        listener_tokens.forget(l.token);
         if(slot==listener_count)++listener_count;else close_listener(l);
-        l.desc=desc;l.claim=id;l.owner=owner;l.generation=generation;l.gate=0;
+        l.desc=desc;l.claim=id;l.owner=owner;l.token=value;l.gate=0;
         l.epoch=hub::owner_epoch(owner);if(!l.epoch)l.epoch=1;l.counted=true;hub::resource_delta(owner,1);
         return APH_OK;
     } __finally {ReleaseSRWLockExclusive(&lock);}
 }
 APH_Result APH_CALL unlisten(APH_Owner owner, APH_Subscription id) {
     AcquireSRWLockExclusive(&lock);
-    __try {unsigned slot=(unsigned)(id&65535u);if(!slot||slot>listener_count||listeners[slot-1].owner!=owner)return APH_E_ARGUMENT;
-        Listener& l=listeners[slot-1];if(l.generation!=(id>>16))return APH_E_STALE;
+    __try {Listener* found=listener_tokens.find(id);if(!found)return APH_E_STALE;
+        Listener& l=*found;if(l.owner!=owner)return APH_E_ARGUMENT;
         close_listener(l);return hub::services::count(&l.gate)?APH_PENDING:APH_OK;
     } __finally {ReleaseSRWLockExclusive(&lock);}
 }
 void APH_CALL native_fault(APH_Owner,APH_SharedClaim,uint32_t,uint64_t,uint32_t);
 APH_Result APH_CALL enter(APH_Owner owner, APH_SharedClaim id, APH_SharedCall* out) {
     if(depth==Depth){native_fault(owner,id,0xe0410003u,0,APH_ORIGINAL_NOT_ENTERED);return APH_E_BUSY;}
-    APH_SharedCall value{};unsigned site=0;
+    APH_SharedCall value{};size_t site=0;
     AcquireSRWLockShared(&lock);
     __try {
         Claim* c=claim_for(owner,id);if(!c)return APH_E_ARGUMENT;site=c->site;Site& s=sites[site];
@@ -214,11 +221,12 @@ APH_Result APH_CALL enter(APH_Owner owner, APH_SharedClaim id, APH_SharedCall* o
 }
 APH_Result invoke(Listener* l, APH_SharedEvent* e) {
     APH_Result result=APH_OK;
+    const auto owner=l->owner;const bool module=l->desc.role==APH_MODULE_OBSERVER;
     __try {
         __try {result=l->desc.callback(l->owner,e,l->desc.user_data);}
         __except(APH_EntryFilter(hub::hooks_api(),l->owner,0,GetExceptionInformation(),
             e->phase==APH_BEFORE||e->original_suppressed?APH_ORIGINAL_NOT_ENTERED:APH_ORIGINAL_RETURNED,l->desc.recovery)) {result=APH_OK;}
-    } __finally {InterlockedDecrement64(&l->gate);if(l->desc.role==APH_MODULE_OBSERVER)hub::leave_module(l->owner);else hub::leave_owner(l->owner);}
+    } __finally {InterlockedDecrement64(&l->gate);if(module)hub::leave_module(owner);else hub::leave_owner(owner);}
     return result;
 }
 APH_Result APH_CALL publish(const APH_SharedCall* input, uint32_t phase, const void* payload, uint32_t bytes) {
@@ -231,8 +239,8 @@ APH_Result APH_CALL publish(const APH_SharedCall* input, uint32_t phase, const v
     if((phase==APH_BEFORE&&f.before)||(phase==APH_AFTER&&(!f.before||f.after)))return APH_E_CONTRACT;
     if(phase==APH_BEFORE)f.before=true;else f.after=true;
     if(!(f.flags&APH_SHARED_DISPATCH)||InterlockedCompareExchange(&s.faulted,0,0))return APH_OK;
-    unsigned limit=0;AcquireSRWLockShared(&lock);limit=listener_count;ReleaseSRWLockShared(&lock);
-    for(unsigned i=0;i<limit;++i) {
+    size_t limit=0;AcquireSRWLockShared(&lock);limit=listener_count;ReleaseSRWLockShared(&lock);
+    for(size_t i=0;i<limit;++i) {
         if(InterlockedCompareExchange(&s.faulted,0,0))break;
         Listener* selected=nullptr;
         AcquireSRWLockShared(&lock);
@@ -243,11 +251,13 @@ APH_Result APH_CALL publish(const APH_SharedCall* input, uint32_t phase, const v
             }
         } __finally {ReleaseSRWLockShared(&lock);}
         if(!selected)continue;
+        const auto owner=selected->owner,callback=(uint64_t)(uintptr_t)selected->desc.callback;
+        const auto role=selected->desc.role;
         APH_SharedEvent e{sizeof(e),phase,call.invocation,selected->epoch,snapshot,bytes,f.suppress?1u:0u};
         APH_Result result=invoke(selected,&e);
-        if(result==APH_SUPPRESS&&phase==APH_BEFORE&&selected->desc.role==APH_CONTROLLER&&s.request.original_policy==APH_CONTROLLED_VOID)f.suppress=true;
+        if(result==APH_SUPPRESS&&phase==APH_BEFORE&&role==APH_CONTROLLER&&s.request.original_policy==APH_CONTROLLED_VOID)f.suppress=true;
         else if(result!=APH_OK) {
-            hub::services::fault(selected->owner,0xe0410002u,(uint64_t)(uintptr_t)selected->desc.callback,
+            hub::services::fault(owner,0xe0410002u,callback,
                       phase==APH_BEFORE?APH_ORIGINAL_NOT_ENTERED:APH_ORIGINAL_RETURNED,false);
             return APH_E_CONTRACT;
         }
@@ -263,9 +273,10 @@ APH_Result APH_CALL leave(const APH_SharedCall* input) {
     if(result==APH_OK)--depth;return result;
 }
 void APH_CALL native_fault(APH_Owner owner,APH_SharedClaim id,uint32_t code,uint64_t address,uint32_t phase) {
-    // Fixed lifetime records; no lock or allocation from an exception filter.
-    if(!id||id>Claims)return;
-    Claim& c=claims[id-1];if(c.owner!=owner||c.site>=Sites)return;
+    // Published records stay resident; no lock/allocation in the filter.
+    Claim* found=id?claims.get(id-1):nullptr;
+    if(!found||!InterlockedCompareExchange(&found->published,0,0))return;
+    Claim& c=*found;if(c.owner!=owner)return;
     Site& s=sites[c.site];if(s.provider_claim!=id)return;
     InterlockedExchange(&s.faulted,1);
     hub::hooks_api()->record_fault(owner,s.native,code,address,phase,0);
@@ -276,19 +287,20 @@ namespace hub::services {
 const APH_SharedApi* shared_api(){return &::api;}
 void shared_epoch_close(APH_Owner owner) {
     AcquireSRWLockExclusive(&lock);
-    __try {for(unsigned i=0;i<listener_count;++i)if(listeners[i].owner==owner&&listeners[i].desc.role!=APH_MODULE_OBSERVER)close_listener(listeners[i]);}
+    __try {for(size_t i=0;i<listener_count;++i)if(listeners[i].owner==owner&&listeners[i].desc.role!=APH_MODULE_OBSERVER)close_listener(listeners[i]);}
     __finally {ReleaseSRWLockExclusive(&lock);}
 }
-void shared_tick(const unsigned char* failed) {
-    for(unsigned i=0;i<Claims;++i) {
+void shared_tick() {
+    AcquireSRWLockShared(&lock);const size_t limit=claim_count;ReleaseSRWLockShared(&lock);
+    for(size_t i=0;i<limit;++i) {
         APH_Owner owner=0;
         AcquireSRWLockShared(&lock);
-        __try {if(i<claim_count&&!claims[i].released&&failed[claims[i].owner]==1)owner=claims[i].owner;}
+        __try {if(i<claim_count&&!claims[i].released&&hub::owner_failure(claims[i].owner)==1)owner=claims[i].owner;}
         __finally {ReleaseSRWLockShared(&lock);}
         if(owner)release(owner,i+1);
     }
     AcquireSRWLockExclusive(&lock);
-    __try {for(unsigned i=0;i<listener_count;++i)if(hub::services::read(&listeners[i].gate)&hub::services::Closed)close_listener(listeners[i]);}
+    __try {for(size_t i=0;i<listener_count;++i)if(hub::services::read(&listeners[i].gate)&hub::services::Closed)close_listener(listeners[i]);}
     __finally {ReleaseSRWLockExclusive(&lock);}
 }
 }

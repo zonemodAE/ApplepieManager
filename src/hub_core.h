@@ -10,6 +10,7 @@ bool ready();
 uint64_t capabilities();
 const APH_Api* api();
 APH_Owner add_owner(const APH_Manifest&, HMODULE);
+unsigned char owner_failure(APH_Owner); // fault-safe, allocation-free published state
 void set_owner_state(APH_Owner, uint32_t, APH_Result);
 uint64_t begin_enable(APH_Owner);
 // Async callers must pass the captured epoch. The default is for synchronous

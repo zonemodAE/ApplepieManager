@@ -2,19 +2,20 @@
 #include "hub_internal.h"
 #include <commctrl.h>
 namespace {
-constexpr unsigned SiteCount=64,RouteCount=128,CommandCount=128;
-struct Site {HWND hwnd;DWORD thread;uint64_t generation;uint32_t state;APH_Result result;HHOOK hook;bool installing,scheduling;};
-struct Route {APH_Owner owner;uint64_t epoch,generation;unsigned site;APH_WindowRequest request;volatile LONG64 gate;bool counted,module;};
-struct Command {APH_Route route;uint64_t generation;APH_WindowCommand value;bool used;};
+constexpr unsigned CommandCount=128;
+struct Site {HWND hwnd;DWORD thread;uint64_t generation;uint32_t state;APH_Result result;HHOOK hook;bool installing,scheduling;size_t index;};
+struct Route {APH_Owner owner;uint64_t epoch;APH_Route token;size_t site;APH_WindowRequest request;volatile LONG64 gate;bool counted,module;};
+struct Command {APH_Route route;uint64_t generation;APH_WindowCommand value;bool used;Route* record;};
 SRWLOCK lock=SRWLOCK_INIT;
-Site sites[SiteCount]{};Route routes[RouteCount]{};Command commands[CommandCount]{};
-unsigned site_count,route_count;UINT wake_message;
+hub::ResidentTable<Site> sites;
+hub::ResidentTable<Route> routes;
+hub::TokenIndex<Route> route_tokens;
+Command commands[CommandCount]{};
+size_t site_count,route_count;UINT wake_message;
 uint64_t window_sequence;
 HANDLE binding_wake;
-unsigned route_index(APH_Route id){return (unsigned)(id&65535u)-1;}
 Route* route_for(APH_Owner owner,APH_Route id) {
-    unsigned i=route_index(id);if(i>=route_count)return nullptr;
-    Route& r=routes[i];return r.owner==owner&&r.generation==(id>>16)?&r:nullptr;
+    Route* r=route_tokens.find(id);return r&&r->owner==owner?r:nullptr;
 }
 const wchar_t* incarnation_property=L"Applepie.Core.Incarnation.4E67B92A";
 LRESULT CALLBACK subclass(HWND,UINT,WPARAM,LPARAM,UINT_PTR,DWORD_PTR);
@@ -40,11 +41,11 @@ LRESULT CALLBACK message_hook(int code,WPARAM removed,LPARAM data) {
     if(code>=0&&removed==PM_REMOVE) {
         MSG* msg=(MSG*)data;
         if(msg->message==wake_message) {
-            // The fixed array is process resident. Snapshot indexes under the
+            // Records are process resident. Snapshot indexes under the
             // lock, but perform Win32 chain changes on this thread outside it.
-            unsigned count=0;
+            size_t count=0;
             AcquireSRWLockShared(&lock);count=site_count;ReleaseSRWLockShared(&lock);
-            for(unsigned i=0;i<count;++i)if(sites[i].hwnd==msg->hwnd)bind(&sites[i]);
+            for(size_t i=0;i<count;++i)if(sites[i].hwnd==msg->hwnd)bind(&sites[i]);
         }
     }
     return CallNextHookEx(nullptr,code,removed,data);
@@ -54,14 +55,15 @@ DWORD WINAPI binding_worker(void*) {
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,(LPCWSTR)message_hook,&module);
     for(;;) {
         WaitForSingleObject(binding_wake,50);
-        for(unsigned i=0;i<SiteCount;++i) {
+        const size_t limit=sites.size();
+        for(size_t i=0;i<limit;++i) {
             Site* site=nullptr;
             AcquireSRWLockExclusive(&lock);
             HHOOK stale=nullptr;
             __try {
                 if(i<site_count&&sites[i].state==APH_WINDOW_PENDING&&GetPropW(sites[i].hwnd,incarnation_property)!=&sites[i]) {
                     sites[i].state=APH_WINDOW_DEAD;sites[i].generation=++window_sequence;stale=sites[i].hook;sites[i].hook=nullptr;
-                    for(unsigned j=0;j<route_count;++j)if(routes[j].site==i)close_route(routes[j]);
+                    for(size_t j=0;j<route_count;++j)if(routes[j].site==i)close_route(routes[j]);
                 }
                 if(i<site_count&&sites[i].state==APH_WINDOW_PENDING&&!sites[i].installing&&!sites[i].hook&&!sites[i].scheduling){site=&sites[i];site->scheduling=true;}
             }
@@ -81,44 +83,47 @@ DWORD WINAPI binding_worker(void*) {
     }
 }
 void invoke(Route* route,APH_WindowEvent* event) {
+    const auto owner=route->owner;const bool module=route->module;
     __try {
         __try {route->request.callback(route->owner,event,route->request.user_data);}
         __except(APH_EntryFilter(hub::hooks_api(),route->owner,0,GetExceptionInformation(),
             event->phase==APH_WINDOW_AFTER?APH_ORIGINAL_RETURNED:APH_ORIGINAL_NOT_ENTERED,route->request.recovery&0xffu)) {}
-    } __finally {InterlockedDecrement64(&route->gate);if(route->module)hub::leave_module(route->owner);else hub::leave_owner(route->owner);}
+    } __finally {InterlockedDecrement64(&route->gate);if(module)hub::leave_module(owner);else hub::leave_owner(owner);}
 }
-Route* admit(unsigned index,unsigned site) {
+Route* admit(Route* record,size_t site,APH_Route token=0) {
     Route* result=nullptr;
     AcquireSRWLockShared(&lock);
     __try {
-        if(index<route_count) {
-            Route& r=routes[index];
-            if(r.site==site&&sites[site].state==APH_WINDOW_BOUND&&hub::services::admit(&r.gate)) {
+        if(record) {
+            Route& r=*record;
+            if((!token||r.token==token)&&r.site==site&&sites[site].state==APH_WINDOW_BOUND&&hub::services::admit(&r.gate)) {
                 if(r.module?hub::admit_module(r.owner):hub::admit_owner(r.owner,r.epoch))result=&r;else InterlockedDecrement64(&r.gate);
             }
         }
     } __finally {ReleaseSRWLockShared(&lock);}
     return result;
 }
-void dispatch(unsigned site,APH_WindowEvent event) {
-    for(unsigned i=0;i<RouteCount;++i) {
-        Route* route=admit(i,site);if(!route)continue;
+void dispatch(size_t site,APH_WindowEvent event) {
+    AcquireSRWLockShared(&lock);const size_t limit=route_count;ReleaseSRWLockShared(&lock);
+    for(size_t i=0;i<limit;++i) {
+        Route* route=admit(routes.get(i),site);if(!route)continue;
         event.access={sizeof(APH_Access),0,route->epoch,0,0};
         invoke(route,&event);
     }
 }
-void drain(unsigned site) {
+void drain(size_t site) {
     // At most the bounded capacity per wake, including commands posted by a
     // callback. No pointer payload or blocking SendMessage into plugin code.
     for(unsigned i=0;i<CommandCount;++i) {
         Command c{};
         AcquireSRWLockExclusive(&lock);
-        __try {if(commands[i].used&&routes[route_index(commands[i].route)].site==site){c=commands[i];commands[i].used=false;}}
+        __try {if(commands[i].used&&commands[i].record->site==site){c=commands[i];commands[i].used=false;}}
         __finally {ReleaseSRWLockExclusive(&lock);}
         if(!c.used||c.generation!=sites[site].generation)continue;
-        Route* route=admit(route_index(c.route),site);if(!route)continue;
-        if(route->generation!=(c.route>>16)||hub::services::runtime_api()->validate(route->owner,&c.value.access)!=APH_OK) {
-            InterlockedDecrement64(&route->gate);hub::leave_owner(route->owner);continue;
+        Route* route=admit(c.record,site,c.route);if(!route)continue;
+        const auto owner=route->owner;
+        if(hub::services::runtime_api()->validate(owner,&c.value.access)!=APH_OK) {
+            InterlockedDecrement64(&route->gate);hub::leave_owner(owner);continue;
         }
         APH_WindowEvent e{sizeof(e),APH_WINDOW_COMMAND,(uint64_t)(uintptr_t)sites[site].hwnd,c.generation,
             c.value.opcode,0,c.value.wparam,c.value.lparam,0,c.value.access};
@@ -126,7 +131,7 @@ void drain(unsigned site) {
     }
 }
 LRESULT CALLBACK subclass(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,UINT_PTR id,DWORD_PTR ref) {
-    Site* site=(Site*)ref;unsigned index=(unsigned)(site-sites);
+    Site* site=(Site*)ref;size_t index=site->index;
     if(msg==wake_message){drain(index);return 0;}
     APH_WindowEvent e{sizeof(e),APH_WINDOW_BEFORE,(uint64_t)(uintptr_t)hwnd,site->generation,msg,0,(uint64_t)wp,(int64_t)lp,0,{}};
     dispatch(index,e);
@@ -138,8 +143,8 @@ LRESULT CALLBACK subclass(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,UINT_PTR id,DWO
         AcquireSRWLockExclusive(&lock);
         __try {
             site->state=APH_WINDOW_DEAD;site->generation=++window_sequence;
-            for(unsigned i=0;i<route_count;++i)if(routes[i].site==index)close_route(routes[i]);
-            for(auto& c:commands)if(c.used&&routes[route_index(c.route)].site==index)c.used=false;
+            for(size_t i=0;i<route_count;++i)if(routes[i].site==index)close_route(routes[i]);
+            for(auto& c:commands)if(c.used&&c.record->site==index)c.used=false;
         } __finally {ReleaseSRWLockExclusive(&lock);}
         RemoveWindowSubclass(hwnd,subclass,id);
         if(GetPropW(hwnd,incarnation_property)==site)RemovePropW(hwnd,incarnation_property);
@@ -160,22 +165,23 @@ APH_Result APH_CALL subscribe(APH_Owner owner,const APH_WindowRequest* input,APH
     __try {
         if(!wake_message)wake_message=RegisterWindowMessageW(L"Applepie.Core.Window.v1.4E67B92A");
         if(!wake_message)return APH_E_BACKEND;
-        unsigned slot=route_count;
-        if(hub::owner_flags(owner)&APH_PLUGIN_LIFECYCLE)for(unsigned i=0;i<route_count;++i)
+        size_t slot=route_count;
+        if(hub::owner_flags(owner)&APH_PLUGIN_LIFECYCLE)for(size_t i=0;i<route_count;++i)
             if(routes[i].owner==owner&&(hub::services::read(&routes[i].gate)&hub::services::Closed)&&!hub::services::count(&routes[i].gate)){slot=i;break;}
-        if(slot==RouteCount)return APH_E_QUEUE_FULL;
-        unsigned n=site_count;
-        for(unsigned i=0;i<site_count;++i)if(sites[i].hwnd==hwnd&&sites[i].thread==thread&&sites[i].state<APH_WINDOW_DEAD&&GetPropW(hwnd,incarnation_property)==&sites[i]){n=i;break;}
+        if(!routes.ensure(slot))return APH_E_QUEUE_FULL;
+        size_t n=site_count;
+        for(size_t i=0;i<site_count;++i)if(sites[i].hwnd==hwnd&&sites[i].thread==thread&&sites[i].state<APH_WINDOW_DEAD&&GetPropW(hwnd,incarnation_property)==&sites[i]){n=i;break;}
         if(n==site_count) {
-            if(site_count==SiteCount)return APH_E_QUEUE_FULL;
-            site=&sites[site_count++];*site={hwnd,thread,++window_sequence,APH_WINDOW_PENDING,APH_PENDING,nullptr,false,false};
+            site=sites.ensure(site_count);if(!site)return APH_E_QUEUE_FULL;
+            ++site_count;*site={hwnd,thread,++window_sequence,APH_WINDOW_PENDING,APH_PENDING,nullptr,false,false,n};
             if(!SetPropW(hwnd,incarnation_property,site)){site->state=APH_WINDOW_FAILED;site->result=APH_E_BACKEND;return APH_E_BACKEND;}
         } else site=&sites[n];
-        Route& route=routes[slot];uint64_t generation=route.generation+1;
-        APH_Route value=(generation<<16)|(slot+1);
-        if(!hub::copy(out,&value,sizeof(value)))return APH_E_ARGUMENT;
+        Route& route=routes[slot];APH_Route value=route_tokens.issue(&route,route.token);
+        if(!value)return APH_E_QUEUE_FULL;
+        if(!hub::copy(out,&value,sizeof(value))){route_tokens.cancel(value,route.token);return APH_E_ARGUMENT;}
+        route_tokens.forget(route.token);
         if(slot==route_count)++route_count;else close_route(route);
-        route.owner=owner;route.epoch=hub::owner_epoch(owner);route.generation=generation;route.gate=0;route.module=module;
+        route.owner=owner;route.epoch=hub::owner_epoch(owner);route.token=value;route.gate=0;route.module=module;
         if(!route.epoch)route.epoch=1;
         route.site=n;route.request=r;route.counted=true;hub::resource_delta(owner,1);
         if(thread!=GetCurrentThreadId()&&!binding_wake) {
@@ -220,7 +226,7 @@ APH_Result APH_CALL post(APH_Owner owner,APH_Route id,const APH_WindowCommand* i
         if(r.module)return APH_E_REVOKED;
         if((hub::services::read(&r.gate)&hub::services::Closed)||s.state>=APH_WINDOW_DEAD||c.access.activation_epoch!=r.epoch)return APH_E_STALE;
         for(auto& pending:commands)if(!pending.used) {
-            pending={id,s.generation,c,true};
+            pending={id,s.generation,c,true,&r};
             if(PostMessageW(s.hwnd,wake_message,0,0))return APH_OK;
             pending.used=false;return APH_E_BACKEND;
         }
@@ -234,15 +240,15 @@ const APH_WindowApi* window_api(){return &::api;}
 void window_epoch_close(APH_Owner owner) {
     AcquireSRWLockExclusive(&lock);
     __try {
-        for(unsigned i=0;i<route_count;++i)if(routes[i].owner==owner&&!routes[i].module)close_route(routes[i]);
-        for(auto& c:commands)if(c.used&&routes[route_index(c.route)].owner==owner)c.used=false;
+        for(size_t i=0;i<route_count;++i)if(routes[i].owner==owner&&!routes[i].module)close_route(routes[i]);
+        for(auto& c:commands)if(c.used&&c.record->owner==owner)c.used=false;
     } __finally {ReleaseSRWLockExclusive(&lock);}
 }
-void window_tick(const unsigned char* failed) {
+void window_tick() {
     AcquireSRWLockExclusive(&lock);
     __try {
-        for(unsigned i=0;i<route_count;++i)if(failed[routes[i].owner]||(hub::services::read(&routes[i].gate)&hub::services::Closed))close_route(routes[i]);
-        for(auto& c:commands)if(c.used&&(hub::services::read(&routes[route_index(c.route)].gate)&hub::services::Closed))c.used=false;
+        for(size_t i=0;i<route_count;++i)if(hub::owner_failure(routes[i].owner)||(hub::services::read(&routes[i].gate)&hub::services::Closed))close_route(routes[i]);
+        for(auto& c:commands)if(c.used&&(c.record->token!=c.route||(hub::services::read(&c.record->gate)&hub::services::Closed)))c.used=false;
     } __finally {ReleaseSRWLockExclusive(&lock);}
 }
 }

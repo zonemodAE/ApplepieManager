@@ -9,6 +9,8 @@
 #include <mutex>
 #include <stdexcept>
 #include <string_view>
+#include <vector>
+#include <winver.h>
 
 extern manager_config::Settings g_managerConfig;
 namespace native_settings {
@@ -90,6 +92,25 @@ static std::string utf8(const wchar_t* s, int length) {
     std::string result(bytes, '\0');
     if (bytes) WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, s, length, result.data(), bytes, nullptr, nullptr);
     return result;
+}
+static std::string productVersion(HMODULE module) {
+    std::vector<wchar_t> path(MAX_PATH);
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(module, path.data(), static_cast<DWORD>(path.size()));
+        if (!length) return {};
+        if (length < path.size()) break;
+        path.resize(path.size() * 2);
+    }
+    const DWORD bytes = GetFileVersionInfoSizeW(path.data(), nullptr);
+    if (!bytes) return {};
+    std::vector<unsigned char> data(bytes);
+    if (!GetFileVersionInfoW(path.data(), 0, bytes, data.data())) return {};
+    void* value = nullptr;
+    UINT length = 0;
+    if (!VerQueryValueW(data.data(), L"\\StringFileInfo\\040904b0\\ProductVersion", &value, &length) || !length) return {};
+    const auto text = static_cast<const wchar_t*>(value);
+    if (text[length - 1] != L'\0') return {};
+    return utf8(text, static_cast<int>(length - 1));
 }
 static std::string managedString(void* value) {
     if (!value) return {};
@@ -579,7 +600,9 @@ static bool install() {
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(install), &module)) return false;
     const auto script = resourceData(module, 102), icon = resourceData(module, 103);
     if (script.empty() || icon.empty()) { Log("[AM-Menu] Embedded menu script or icon is missing"); return false; }
-    source = "local applepieTabIconBase64 = " + quote(base64(icon)) + "\n";
+    const auto version = productVersion(module);
+    source = "local applepieVersion = " + quote(version.empty() ? "" : "v" + version) + "\n";
+    source += "local applepieTabIconBase64 = " + quote(base64(icon)) + "\n";
     source.append(script);
     void* loadTarget = nullptr; void* updateTarget = nullptr;
     if (!metadata(&loadTarget, &updateTarget)) { Log("[AM-Menu] GameApp / LuaManager / LuaCypher / XXTEA ABI unavailable; no menu hooks installed"); return false; }

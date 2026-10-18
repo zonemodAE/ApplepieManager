@@ -63,6 +63,7 @@ cl /nologo /utf-8 /O2 /MT /LD /EHsc /std:c++17 ^
     bin\version.res ^
     deps\minhook_lib\lib\libMinHook.x64.lib ^
     user32.lib ^
+    version.lib ^
     comctl32.lib ^
     ole32.lib ^
     /Fo"bin\\" ^

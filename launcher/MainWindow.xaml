@@ -1,0 +1,321 @@
+<Window x:Class="Applepie.Launcher.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:Applepie.Launcher" Title="Applepie Manager" Width="1180" Height="790" MinWidth="960" MinHeight="670" WindowStartupLocation="CenterScreen" Icon="Assets/Logo.png" Style="{StaticResource {x:Type Window}}">
+  <Grid Background="{DynamicResource Canvas}">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="*" />
+      <RowDefinition Height="78" />
+    </Grid.RowDefinitions>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="208" />
+      <ColumnDefinition Width="*" />
+    </Grid.ColumnDefinitions>
+    <Border Grid.RowSpan="2" Background="{DynamicResource Sidebar}" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,1,0">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="180" />
+          <RowDefinition Height="*" />
+          <RowDefinition Height="110" />
+        </Grid.RowDefinitions>
+        <StackPanel Margin="26,30,20,0">
+          <Image Source="Assets/Logo.png" Width="56" Height="56" HorizontalAlignment="Left" />
+          <TextBlock Text="APPLEPIE" FontSize="23" FontWeight="Bold" Margin="0,15,0,2" />
+          <TextBlock Text="MANAGER" Style="{StaticResource Caption}" />
+        </StackPanel>
+        <StackPanel Grid.Row="1" x:Name="NavigationPanel" Margin="0,12,0,0">
+          <RadioButton Style="{StaticResource Navigation}" GroupName="Pages" Content="启动/设置" Tag="{x:Static local:NavigationPage.Deployment}" Checked="Navigate" IsChecked="True" />
+          <RadioButton Style="{StaticResource Navigation}" GroupName="Pages" Content="插件管理" Tag="{x:Static local:NavigationPage.Plugins}" Checked="Navigate" />
+          <RadioButton Style="{StaticResource Navigation}" GroupName="Pages" Content="插件下载" Tag="{x:Static local:NavigationPage.Downloads}" Checked="Navigate" />
+          <RadioButton Style="{StaticResource Navigation}" GroupName="Pages" Content="关于" Tag="{x:Static local:NavigationPage.About}" Checked="Navigate" />
+        </StackPanel>
+        <StackPanel Grid.Row="2" Margin="27,12,24,20">
+          <Button x:Name="ThemeButton" Style="{StaticResource ThemeToggleButton}" Click="ToggleTheme" HorizontalAlignment="Left" Margin="0,0,0,12" />
+          <Border Background="{DynamicResource Accent}" Width="28" Height="3" HorizontalAlignment="Left" Margin="0,0,0,12" />
+          <TextBlock x:Name="VersionLabel" FontFamily="Consolas" FontSize="13" />
+        </StackPanel>
+      </Grid>
+    </Border>
+    <Grid Grid.Column="1" Margin="34,28,34,20">
+      <ScrollViewer x:Name="DeploymentPage">
+        <StackPanel>
+          <Button x:Name="LaunchGameButton" Style="{StaticResource PrimaryButton}" Click="LaunchGame" HorizontalContentAlignment="Stretch" Padding="24,14" Margin="0,0,0,18" Visibility="Collapsed">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="100" />
+              </Grid.ColumnDefinitions>
+              <StackPanel>
+                <TextBlock Text="连接至塔卫二" FontWeight="Bold" FontSize="25" Foreground="{DynamicResource OnAccent}" />
+                <TextBlock Text="CONNECT TO TALOS-II." FontFamily="Bahnschrift" FontSize="13" Foreground="{DynamicResource OnAccent}" Margin="0,9,0,0" />
+              </StackPanel>
+              <TextBlock Grid.Column="1" Text="↗" FontFamily="Segoe UI Symbol" FontSize="40" Foreground="{DynamicResource HeroArrow}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+            </Grid>
+          </Button>
+          <TextBlock Text="部署Applepie" Style="{StaticResource SectionTitle}" />
+          <TextBlock Text="选择游戏目录进行安装。" Foreground="{DynamicResource Muted}" Margin="0,0,0,22" />
+          <StackPanel x:Name="LaunchOptionsPanel" Margin="0,0,0,22" Visibility="Collapsed">
+            <StackPanel.Resources>
+              <Style x:Key="ChannelOption" TargetType="RadioButton">
+                <Setter Property="Foreground" Value="{DynamicResource Ink}" />
+                <Setter Property="Cursor" Value="Hand" />
+                <Setter Property="Margin" Value="0,0,8,0" />
+                <Setter Property="Template">
+                  <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                      <Border x:Name="Frame" Background="{DynamicResource InputSurface}" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="14,8">
+                        <ContentPresenter VerticalAlignment="Center" />
+                      </Border>
+                      <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                          <Setter TargetName="Frame" Property="Background" Value="{DynamicResource Accent}" />
+                          <Setter Property="Foreground" Value="{DynamicResource OnAccent}" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Ink}" /></Trigger>
+                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource AccentText}" /></Trigger>
+                      </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                  </Setter.Value>
+                </Setter>
+              </Style>
+            </StackPanel.Resources>
+            <WrapPanel VerticalAlignment="Center">
+              <TextBlock Text="启动渠道" VerticalAlignment="Center" Margin="0,0,14,0" />
+              <RadioButton x:Name="AutoChannel" Content="自动识别" GroupName="LaunchChannel" Style="{StaticResource ChannelOption}" Tag="{x:Static local:GameLaunchChannel.Auto}" Checked="ChangeLaunchChannel" IsChecked="True" />
+              <RadioButton x:Name="OfficialChannel" Content="官方" ToolTip="官服、B服及国际服" GroupName="LaunchChannel" Style="{StaticResource ChannelOption}" Tag="{x:Static local:GameLaunchChannel.Official}" Checked="ChangeLaunchChannel" />
+              <RadioButton x:Name="SteamChannel" Content="Steam" GroupName="LaunchChannel" Style="{StaticResource ChannelOption}" Tag="{x:Static local:GameLaunchChannel.Steam}" Checked="ChangeLaunchChannel" />
+            </WrapPanel>
+            <TextBlock x:Name="LaunchChannelDetail" Foreground="{DynamicResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,10,0,0" />
+            <Border Style="{StaticResource Card}" Margin="0,14,0,0">
+              <StackPanel>
+                <Grid Margin="0,0,0,14">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Text="自定义启动项" Foreground="{DynamicResource AccentText}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                  <CheckBox x:Name="DirectX11Option" Grid.Column="1" Content="以 DX11 启动" Margin="12,0,0,0" Checked="ChangeDirectX11" Unchecked="ChangeDirectX11" />
+                </Grid>
+                <TextBox x:Name="LaunchArgumentsInput" ToolTip="输入传给游戏的启动参数，包含空格的参数值请用双引号包裹；回车或移开焦点自动保存" VerticalContentAlignment="Center" KeyDown="LaunchArgumentsKeyDown" LostFocus="LaunchArgumentsLostFocus" />
+              </StackPanel>
+            </Border>
+          </StackPanel>
+          <Border Style="{StaticResource Card}">
+            <StackPanel>
+              <TextBlock Text="游戏目录" Foreground="{DynamicResource AccentText}" FontWeight="SemiBold" Margin="0,0,0,14" />
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="GamePathInput" ToolTip="可以选择 Endfield.exe 所在目录，或附近的上级、下级目录" VerticalContentAlignment="Center" KeyDown="PathKeyDown" TextChanged="PathEdited" />
+                <Button Grid.Column="1" Content="识别" Margin="10,0,0,0" Click="ResolvePath" />
+                <Button Grid.Column="2" Content="浏览…" Margin="8,0,0,0" Click="BrowseGame" />
+              </Grid>
+              <TextBlock x:Name="ResolvedPath" Text="尚未选择游戏目录" Foreground="{DynamicResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,12,0,0" />
+            </StackPanel>
+          </Border>
+          <Border x:Name="OfficialLauncherControls" Style="{StaticResource Card}" Margin="0,14,0,0" Visibility="Collapsed">
+            <StackPanel>
+              <TextBlock Text="官方启动器" Foreground="{DynamicResource AccentText}" FontWeight="SemiBold" Margin="0,0,0,14" />
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="OfficialLauncherPathInput" ToolTip="输入 Games.exe、Launcher.exe 或所在文件夹；留空后点击识别可自动查找" VerticalContentAlignment="Center" KeyDown="OfficialLauncherPathKeyDown" TextChanged="OfficialLauncherPathEdited" />
+                <Button Grid.Column="1" Content="识别" Margin="10,0,0,0" Click="ResolveOfficialLauncherPath" />
+                <Button Grid.Column="2" Content="浏览…" Margin="8,0,0,0" Click="BrowseOfficialLauncher" />
+              </Grid>
+              <TextBlock x:Name="OfficialLauncherResolvedPath" Text="尚未选择官方启动器" Foreground="{DynamicResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,12,0,0" />
+            </StackPanel>
+          </Border>
+          <Grid Margin="0,14,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="14" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Border Style="{StaticResource Card}">
+              <StackPanel>
+                <TextBlock Text="已安装核心" Style="{StaticResource Caption}" />
+                <TextBlock x:Name="InstalledVersion" Text="未检测" FontSize="24" Margin="0,10,0,0" />
+                <TextBlock x:Name="BundledCoreVersion" Foreground="{DynamicResource Muted}" FontSize="12" Margin="0,8,0,0" />
+              </StackPanel>
+            </Border>
+            <Border Grid.Column="2" Style="{StaticResource Card}">
+              <StackPanel>
+                <TextBlock Text="管理器版本" Style="{StaticResource Caption}" />
+                <TextBlock x:Name="LauncherVersion" FontSize="24" Margin="0,10,0,0" />
+              </StackPanel>
+            </Border>
+          </Grid>
+          <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="0,20,0,0" Margin="0,24,0,0">
+            <StackPanel>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Margin="0,0,20,0">
+                  <TextBlock Text="已有代理和核心将自动备份" FontWeight="SemiBold" />
+                  <TextBlock Text="配置与其他插件保留；部署前请关闭游戏。" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,6,0,0" />
+                </StackPanel>
+                <Button x:Name="InstallButton" Grid.Column="1" Style="{StaticResource PrimaryButton}" Content="安装 / 更新到游戏  ↗" Click="InstallManager" MinWidth="206" />
+              </Grid>
+              <WrapPanel HorizontalAlignment="Right" Margin="0,12,0,0">
+                <Button x:Name="RestoreProxiesButton" Content="卸载并还原代理 DLL" Click="RestoreProxies" Padding="16,8" Margin="0,0,10,8" />
+                <Button x:Name="DeletePluginDirectoryButton" Content="删除 plugin" Click="DeletePluginDirectory" Padding="16,8" Foreground="{DynamicResource Danger}" Margin="0,0,0,8" />
+              </WrapPanel>
+            </StackPanel>
+          </Border>
+          <TextBlock x:Name="BackupLabel" FontSize="11" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,16,0,0" />
+        </StackPanel>
+      </ScrollViewer>
+      <Grid x:Name="PluginsPage" Visibility="Collapsed">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <StackPanel>
+          <TextBlock Text="插件管理" Style="{StaticResource SectionTitle}" />
+          <TextBlock Text="修改下次启动的启用状态，安装或移除插件。" Foreground="{DynamicResource Muted}" />
+        </StackPanel>
+        <DockPanel Grid.Row="1" Margin="0,22,0,18">
+          <Button Content="安装本地 DLL / ZIP" Style="{StaticResource PrimaryButton}" Click="InstallLocal" DockPanel.Dock="Left" />
+          <Button Content="刷新列表" Click="RefreshLocal" Margin="10,0,0,0" HorizontalAlignment="Left" />
+          <TextBlock x:Name="PluginCount" Foreground="{DynamicResource Muted}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+        </DockPanel>
+        <Grid Grid.Row="2">
+          <TextBlock x:Name="LocalEmpty" Text="选择游戏目录后，在这里管理你的插件。" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" HorizontalAlignment="Center" TextWrapping="Wrap" />
+          <ScrollViewer>
+            <ItemsControl x:Name="LocalItems">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border Style="{StaticResource Card}" Padding="20,18" Margin="0,0,0,10">
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                      </Grid.ColumnDefinitions>
+                      <StackPanel Margin="0,0,18,0">
+                        <TextBlock Text="{Binding Name}" FontSize="17" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding FileName}" FontFamily="Consolas" FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,7,0,0" />
+                        <TextBlock Text="{Binding Detail}" Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0" />
+                        <TextBlock Text="{Binding Version}" FontFamily="Consolas" FontSize="11" Margin="0,5,0,0" />
+                      </StackPanel>
+                      <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding StateText}" HorizontalAlignment="Right" Margin="0,0,0,10">
+                          <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                              <Setter Property="Foreground" Value="{DynamicResource Positive}" />
+                              <Style.Triggers>
+                                <DataTrigger Binding="{Binding Enabled}" Value="False"><Setter Property="Foreground" Value="{DynamicResource Danger}" /></DataTrigger>
+                                <DataTrigger Binding="{Binding Manageable}" Value="False"><Setter Property="Foreground" Value="{DynamicResource Inactive}" /></DataTrigger>
+                              </Style.Triggers>
+                            </Style>
+                          </TextBlock.Style>
+                        </TextBlock>
+                        <StackPanel Orientation="Horizontal">
+                          <Button Content="配置" IsEnabled="{Binding Manageable}" Click="ConfigurePlugin" Padding="15,7" Margin="0,0,8,0" />
+                          <Button Content="{Binding ActionText}" IsEnabled="{Binding Manageable}" Click="TogglePlugin" Padding="15,7" />
+                          <Button Content="删除" Click="DeletePlugin" Padding="15,7" Margin="8,0,0,0" Foreground="{DynamicResource Danger}" />
+                        </StackPanel>
+                      </StackPanel>
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+        </Grid>
+      </Grid>
+      <Grid x:Name="DownloadsPage" Visibility="Collapsed">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <StackPanel>
+          <TextBlock Text="插件下载" Style="{StaticResource SectionTitle}" />
+          <TextBlock Text="从 Applepie 项目维护的目录发现、安装和更新插件。" Foreground="{DynamicResource Muted}" />
+        </StackPanel>
+        <DockPanel Grid.Row="1" Margin="0,22,0,18">
+          <Button Content="刷新在线目录" Click="RefreshCatalog" />
+          <TextBlock x:Name="CatalogStatus" Text="尚未连接" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="16,0,0,0" TextWrapping="Wrap" />
+        </DockPanel>
+        <Grid Grid.Row="2">
+          <TextBlock x:Name="OnlineEmpty" Text="插件目录会在这里显示。" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" HorizontalAlignment="Center" TextWrapping="Wrap" MaxWidth="520" />
+          <ScrollViewer>
+            <ItemsControl x:Name="OnlineItems">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border Style="{StaticResource Card}" Margin="0,0,0,12">
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                      </Grid.ColumnDefinitions>
+                      <StackPanel Margin="0,0,24,0">
+                        <TextBlock Text="{Binding Name}" FontSize="19" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding Description}" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,10,0,12" />
+                        <TextBlock Text="{Binding VersionText}" FontSize="11" FontFamily="Consolas" Foreground="{DynamicResource AccentText}" />
+                      </StackPanel>
+                      <Button Grid.Column="1" Content="{Binding ActionText}" IsEnabled="{Binding CanInstall}" Click="InstallOnline" Style="{StaticResource PrimaryButton}" VerticalAlignment="Center" MinWidth="90" />
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+        </Grid>
+      </Grid>
+      <ScrollViewer x:Name="AboutPage" Visibility="Collapsed">
+        <StackPanel>
+          <TextBlock Text="关于" Style="{StaticResource SectionTitle}" />
+          <TextBlock Text="检查 GitHub 发布版，由你决定何时更新。" Foreground="{DynamicResource Muted}" Margin="0,0,0,26" />
+          <Border Style="{StaticResource Card}">
+            <StackPanel>
+              <TextBlock Text="APPLEPIE MANAGER" Foreground="{DynamicResource AccentText}" FontFamily="Consolas" />
+              <TextBlock x:Name="UpdateTitle" Text="正在检查更新…" FontSize="23" Margin="0,18,0,12" />
+              <TextBlock x:Name="UpdateDescription" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" />
+              <StackPanel Orientation="Horizontal" Margin="0,22,0,0">
+                <Button Content="检查更新" Click="CheckUpdates" />
+                <Button x:Name="UpdateButton" Content="更新桌面" Click="UpdateApplication" Style="{StaticResource PrimaryButton}" Margin="12,0,0,0" Visibility="Collapsed" />
+              </StackPanel>
+            </StackPanel>
+          </Border>
+          <Border Style="{StaticResource Card}" Margin="0,16,0,0">
+            <StackPanel>
+              <TextBlock Text="游戏内核心" Foreground="{DynamicResource AccentText}" />
+              <TextBlock x:Name="CoreUpdateTitle" Text="尚未检查核心更新" FontSize="23" Margin="0,18,0,12" />
+              <TextBlock x:Name="CoreUpdateDescription" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" />
+              <WrapPanel Margin="0,22,0,0">
+                <Button x:Name="CoreUpdateButton" Content="更新核心" Click="UpdateCore" Visibility="Collapsed" />
+                <Button x:Name="UpdateAllButton" Content="一起更新" Click="UpdateAll" Style="{StaticResource PrimaryButton}" Margin="12,0,0,0" Visibility="Collapsed" />
+              </WrapPanel>
+            </StackPanel>
+          </Border>
+          <TextBlock x:Name="ReleaseWarnings" TextWrapping="Wrap" Foreground="{DynamicResource Danger}" Margin="0,14,0,0" />
+        </StackPanel>
+      </ScrollViewer>
+    </Grid>
+    <Border Grid.Row="1" Grid.Column="1" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="34,15">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="*" />
+          <RowDefinition Height="3" />
+        </Grid.RowDefinitions>
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+          </Grid.ColumnDefinitions>
+          <TextBlock x:Name="StatusText" Text="就绪 · 选择游戏目录开始" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+          <Button Grid.Column="1" x:Name="CancelButton" Content="取消下载" Click="CancelOperation" Visibility="Collapsed" Padding="12,4" Margin="12,0,0,4" />
+        </Grid>
+        <ProgressBar Grid.Row="1" x:Name="OperationProgress" Visibility="Collapsed" Maximum="100" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

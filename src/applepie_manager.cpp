@@ -32,7 +32,7 @@ static DWORD WINAPI InitThread(LPVOID) {
     swprintf_s(logPath, L"%s\\applepie_manager_log.txt", loader::directory());
     g_managerLog.open(logPath);
     Log("=== Applepie Manager / CoreReady ===");
-    InitializePluginView();
+    if(!InitializePluginView()){Log("[AM] Cannot allocate plugin settings view");return 1;}
     g_managerConfig = loader::initial_config();
     Log("[AM] Config: %ls migrated=%u load_error=%lu save_error=%lu", g_managerConfig.path.c_str(),
         unsigned(g_managerConfig.migrated), g_managerConfig.load_error, g_managerConfig.save_error);
