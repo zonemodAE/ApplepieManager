@@ -164,7 +164,10 @@ local function buildRows()
         local labels = {
             {"hide_uid", "隐藏 UID", "Hide UID"}, {"hide_ping", "隐藏延迟", "Hide ping"},
             {"hide_menu_uid", "隐藏菜单 UID", "Hide menu UID"}, {"hide_menu_name", "隐藏菜单名称", "Hide menu name"},
-            {"hide_card_uid", "隐藏名片 UID", "Hide card UID"}, {"hide_card_name", "隐藏名片名称", "Hide card name"}}
+            {"hide_card_uid", "隐藏名片 UID", "Hide card UID"}, {"hide_card_name", "隐藏名片名称", "Hide card name"},
+            {"hide_hud_left", "隐藏左下 UI（队伍）", "Hide bottom-left HUD (squad)"},
+            {"hide_hud_center", "隐藏中下 UI（血条/技力）", "Hide bottom-center HUD (HP/SP)"},
+            {"hide_hud_right", "隐藏右下 UI（技能）", "Hide bottom-right HUD (skills)"}}
         for _, item in ipairs(labels) do
             local key = item[1]
             toggle(text(item[2], item[3]), data.preferences[key],

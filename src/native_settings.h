@@ -149,9 +149,11 @@ static DWORD WINAPI savePreferences(void*) {
 }
 static void persistPreferences() {
     g_managerConfig.values["language"] = english ? "en" : "zh";
-    const char* names[] = {"hide_uid", "hide_ping", "hide_menu_uid", "hide_menu_name", "hide_card_uid", "hide_card_name"};
-    const bool values[] = {g_uidHidden, g_pingHidden, g_menuUidHidden, g_menuNameHidden, g_cardUidHidden, g_cardNameHidden};
-    for (unsigned i = 0; i < 6; ++i) g_managerConfig.values[names[i]] = values[i] ? "true" : "false";
+    const char* names[] = {"hide_uid", "hide_ping", "hide_menu_uid", "hide_menu_name", "hide_card_uid", "hide_card_name",
+        "hide_hud_left", "hide_hud_center", "hide_hud_right"};
+    const bool values[] = {g_uidHidden, g_pingHidden, g_menuUidHidden, g_menuNameHidden, g_cardUidHidden, g_cardNameHidden,
+        g_hudHidden[HUD_LEFT], g_hudHidden[HUD_CENTER], g_hudHidden[HUD_RIGHT]};
+    for (unsigned i = 0; i < _countof(names); ++i) g_managerConfig.values[names[i]] = values[i] ? "true" : "false";
     for (unsigned i = 0; i < loader::count(); ++i) {
         loader::Plugin p{}; if (!loader::snapshot(i, &p)) continue;
         const auto key = manager_config::plugin_key(p.filename);
@@ -227,9 +229,11 @@ static std::string snapshot() {
     keyFinished = false;
     for (unsigned i = 0; i < loader::count(); ++i) out += pluginData(i, false) + ",";
     out += "},plugin=" + (selected >= 0 ? pluginData(unsigned(selected), true) : "nil") + ",preferences={";
-    const char* names[] = {"hide_uid", "hide_ping", "hide_menu_uid", "hide_menu_name", "hide_card_uid", "hide_card_name"};
-    const bool values[] = {g_uidHidden, g_pingHidden, g_menuUidHidden, g_menuNameHidden, g_cardUidHidden, g_cardNameHidden};
-    for (unsigned i = 0; i < 6; ++i) out += std::string(names[i]) + "=" + (values[i] ? "true," : "false,");
+    const char* names[] = {"hide_uid", "hide_ping", "hide_menu_uid", "hide_menu_name", "hide_card_uid", "hide_card_name",
+        "hide_hud_left", "hide_hud_center", "hide_hud_right"};
+    const bool values[] = {g_uidHidden, g_pingHidden, g_menuUidHidden, g_menuNameHidden, g_cardUidHidden, g_cardNameHidden,
+        g_hudHidden[HUD_LEFT], g_hudHidden[HUD_CENTER], g_hudHidden[HUD_RIGHT]};
+    for (unsigned i = 0; i < _countof(names); ++i) out += std::string(names[i]) + "=" + (values[i] ? "true," : "false,");
     return out + "}}";
 }
 template<class T> static T number(const std::string& s) {
@@ -357,6 +361,9 @@ static void command(const std::string& path) {
                 else if (key == "hide_menu_name") g_menuNameHidden = on;
                 else if (key == "hide_card_uid") g_cardUidHidden = on;
                 else if (key == "hide_card_name") g_cardNameHidden = on;
+                else if (key == "hide_hud_left") SetHudHidden(HUD_LEFT, on);
+                else if (key == "hide_hud_center") SetHudHidden(HUD_CENTER, on);
+                else if (key == "hide_hud_right") SetHudHidden(HUD_RIGHT, on);
                 else throw std::runtime_error("Unknown manager setting");
             }
             persistPreferences();
@@ -516,6 +523,10 @@ static APH_Result APH_CALL onUpdate(APH_Owner, const APH_SharedEvent* event, voi
                 pumping = ownsPump = true;
                 pump();
             }
+        }
+        if ((ownsPump || !pumping) && HudPending()) {
+            if (!scope) scope = beginScope();
+            if (scope) PumpHud();
         }
     } __finally { if (ownsPump) pumping = false; endScope(scope); }
     return APH_OK;

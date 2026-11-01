@@ -12,7 +12,8 @@ struct Settings {
 inline config_file::Values defaults() {
     return {{"language", "zh"}, {"hide_uid", "true"}, {"hide_ping", "false"},
         {"hide_menu_uid", "true"}, {"hide_menu_name", "true"},
-        {"hide_card_uid", "true"}, {"hide_card_name", "true"}};
+        {"hide_card_uid", "true"}, {"hide_card_name", "true"},
+        {"hide_hud_left", "false"}, {"hide_hud_center", "false"}, {"hide_hud_right", "false"}};
 }
 inline std::string plugin_key(std::string filename) {
     for (auto& c : filename) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';

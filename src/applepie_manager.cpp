@@ -45,6 +45,9 @@ static DWORD WINAPI InitThread(LPVOID) {
     g_menuNameHidden = manager_config::boolean(g_managerConfig, "hide_menu_name", true);
     g_cardUidHidden  = manager_config::boolean(g_managerConfig, "hide_card_uid",  true);
     g_cardNameHidden = manager_config::boolean(g_managerConfig, "hide_card_name", true);
+    SetHudHidden(HUD_LEFT,   manager_config::boolean(g_managerConfig, "hide_hud_left",   false));
+    SetHudHidden(HUD_CENTER, manager_config::boolean(g_managerConfig, "hide_hud_center", false));
+    SetHudHidden(HUD_RIGHT,  manager_config::boolean(g_managerConfig, "hide_hud_right",  false));
 
     // Bootstrap excludes VM shutdown; all native menu objects stay on the game thread.
     HANDLE uidWorker=CreateThread(nullptr,0,[](LPVOID)->DWORD {
