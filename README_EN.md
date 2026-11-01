@@ -17,6 +17,7 @@ A DLL plugin manager for *Arknights: Endfield*. Manager includes a Core for plug
 - **Unified Enable Switch**: Requests the session state and automatically saves the next-launch preference; rejected requests preserve the previous preference
 - **Basic Settings**: Plugins can optionally register boolean, integer, floating-point, enum, short-text and key fields. Keys show their names and support press-to-bind input. Manager provides editing, validation, automatic saving after changes and completion notifications. Fields are allocated dynamically; complex configuration remains plugin-owned
 - **UID Hiding**: Hide in-game UID, ping display, menu UID/name, and business card UID/name
+- **Battle HUD Hiding**: Separately hide the bottom-left squad, bottom-center HP/SP and bottom-right skill
 - **Multilingual UI**: Chinese/English toggle for the Manager panel
 
 ## User Agreement & Disclaimer
@@ -65,7 +66,7 @@ d3dcompiler_47.dll     → Game Directory/d3dcompiler_47.dll
 2. Open the game's settings menu and select the added icon at the end of the tab list. The selected page is titled **Applepie Manager**.
 3. Click **Configure** beside a plugin to open its settings, then **Details** to inspect its state and errors. Active is green; inactive states are red. **Enable plugin** controls the current session and automatically saves the next-launch preference.
 4. Basic settings save automatically. Press a key to record a binding, or Esc to cancel.
-5. Open **Manager settings** for language and UID/ping/menu/business-card visibility options.
+5. Open **Manager settings** for language, UID/ping/menu/business-card and battle HUD visibility options.
 
 Loaded plugin DLLs remain resident. To replace Manager or a loaded plugin DLL, exit the game, replace the file, and restart.
 

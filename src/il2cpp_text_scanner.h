@@ -44,6 +44,7 @@ IL2CPP_DECL(uint32_t, il2cpp_method_get_flags, void*, uint32_t*);
 IL2CPP_DECL(uint32_t, il2cpp_method_get_param_count, void*);
 IL2CPP_DECL(void*, il2cpp_method_get_return_type, void*);
 IL2CPP_DECL(int, il2cpp_type_get_type, void*);
+IL2CPP_DECL(void*, il2cpp_object_unbox, void*);
 
 #undef IL2CPP_DECL
 
@@ -66,6 +67,9 @@ static void* g_methodGameObjectSetActive = nullptr;
 static void* g_methodTransformGetName = nullptr;
 static void* g_methodTransformGetParent = nullptr;
 static void* g_methodGameObjectFind = nullptr;
+static void* g_methodGameObjectGetTransform = nullptr;
+static void* g_methodTransformGetLocalScale = nullptr;
+static void* g_methodTransformSetLocalScale = nullptr;
 
 // TMP_Text class and methods
 static void* g_classTMP_Text = nullptr;
@@ -150,6 +154,7 @@ static bool ResolveIL2Cpp() {
     R(il2cpp_gchandle_new);
     R(il2cpp_gchandle_free);R(il2cpp_gchandle_get_target);
     R(il2cpp_method_get_flags);R(il2cpp_method_get_param_count);R(il2cpp_method_get_return_type);R(il2cpp_type_get_type);
+    R(il2cpp_object_unbox);
 #undef R
 
     return p_il2cpp_domain_get_assemblies && p_il2cpp_assembly_get_image && p_il2cpp_string_new && p_il2cpp_runtime_invoke &&
@@ -173,6 +178,8 @@ static bool ScanUidMetadata(void* dom) {
             p_il2cpp_class_get_method_from_name(goClass, "SetActive", 1);
         g_methodGameObjectFind =
             p_il2cpp_class_get_method_from_name(goClass, "Find", 1);
+        g_methodGameObjectGetTransform =
+            p_il2cpp_class_get_method_from_name(goClass, "get_transform", 0);
         Log("[AM-IL2CPP] GameObject.SetActive: %p, Find: %p",
             g_methodGameObjectSetActive, g_methodGameObjectFind);
     }
@@ -201,7 +208,12 @@ static bool ScanUidMetadata(void* dom) {
     if (trClass) {
         g_methodTransformGetParent =
             p_il2cpp_class_get_method_from_name(trClass, "get_parent", 0);
-        Log("[AM-IL2CPP] Transform.get_parent: %p", g_methodTransformGetParent);
+        g_methodTransformGetLocalScale =
+            p_il2cpp_class_get_method_from_name(trClass, "get_localScale", 0);
+        g_methodTransformSetLocalScale =
+            p_il2cpp_class_get_method_from_name(trClass, "set_localScale", 1);
+        Log("[AM-IL2CPP] Transform.get_parent: %p, localScale: %p/%p", g_methodTransformGetParent,
+            g_methodTransformGetLocalScale, g_methodTransformSetLocalScale);
     }
 
     // TMP_Text class
@@ -322,6 +334,70 @@ static void PumpUidCommands() {
     const bool ping=UidSetActive(g_uidPingHandle,"UINode/UIRoot/UIDPanelPanel/Main/TextNode/PingCon",!g_pingHidden.load());
     g_uidLocated.store(uid&&ping,std::memory_order_release);
 }
+
+// ============================================================================
+// Battle HUD — zero scale hides the view only; activation, fade, animation
+// state and key input stay with the game. Panels can be recreated, so hidden
+// parts are checked every frame and looked up again when their object is gone.
+// ============================================================================
+enum { HUD_LEFT, HUD_CENTER, HUD_RIGHT, HUD_GROUPS };
+struct HudVector { float x, y, z; };
+struct HudPart { const char* path; int group; uint32_t handle; HudVector original; };
+static HudPart g_hudParts[] = {
+    {"UINode/UIRoot/SquadIconPanel/Main", HUD_LEFT},
+    {"UINode/UIRoot/BattleActionPanel/HpNode", HUD_CENTER},
+    {"UINode/UIRoot/BattleActionPanel/ActionsNode/AtbNode", HUD_CENTER},
+    {"UINode/UIRoot/BattleActionPanel/ActionsNode/RightBottomNode", HUD_RIGHT}};
+static std::atomic<bool> g_hudHidden[HUD_GROUPS]{};
+static bool HudScale(void* transform, HudVector* scale) {
+    // A destroyed Unity object throws inside runtime_invoke; SafeInvoke returns null.
+    void* boxed = SafeInvoke(g_methodTransformGetLocalScale, transform);
+    void* value = boxed ? p_il2cpp_object_unbox(boxed) : nullptr;
+    if (!value) return false;
+    memcpy(scale, value, sizeof(*scale));
+    return true;
+}
+static void HudSetScale(void* transform, HudVector scale) {
+    void* params[] = {&scale};
+    SafeInvoke(g_methodTransformSetLocalScale, transform, params);
+}
+static void HudRelease(HudPart& part) { if (part.handle) p_il2cpp_gchandle_free(part.handle); part.handle = 0; }
+static bool HudPending() {
+    for (const auto& part : g_hudParts) if (part.handle || g_hudHidden[part.group].load(std::memory_order_relaxed)) return true;
+    return false;
+}
+// Game thread inside the VM scope only.
+static void PumpHud() {
+    if (!g_methodGameObjectGetTransform || !g_methodTransformGetLocalScale || !g_methodTransformSetLocalScale || !p_il2cpp_object_unbox) return;
+    static ULONGLONG nextFind = 0;
+    const auto now = GetTickCount64();
+    const bool find = now >= nextFind;
+    for (auto& part : g_hudParts) {
+        if (!UidRuntimeOpen()) return;
+        const bool hide = g_hudHidden[part.group].load(std::memory_order_relaxed);
+        void* transform = part.handle ? p_il2cpp_gchandle_get_target(part.handle) : nullptr;
+        HudVector scale{};
+        if (!transform || !HudScale(transform, &scale)) {
+            HudRelease(part);
+            // A recreated panel starts at its own scale. Closed panels are not
+            // searched every frame.
+            if (!hide || !find) continue;
+            nextFind = now + 1000;
+            void* go = UidFindGO(part.path);
+            transform = go ? SafeInvoke(g_methodGameObjectGetTransform, go) : nullptr;
+            if (!transform || !HudScale(transform, &scale)) continue;
+            part.handle = p_il2cpp_gchandle_new(transform, 0);
+            if (!part.handle) continue;
+        }
+        const bool zero = scale.x == 0 && scale.y == 0 && scale.z == 0;
+        if (hide && !zero) { part.original = scale; HudSetScale(transform, {0, 0, 0}); }
+        else if (!hide) {
+            if (zero) HudSetScale(transform, part.original);
+            HudRelease(part);
+        }
+    }
+}
+static void SetHudHidden(int group, bool hidden) { g_hudHidden[group] = hidden; }
 static void SetUidVisible(bool visible) {g_uidHidden=!visible;g_uidCommand.fetch_add(1,std::memory_order_release);}
 static void SetPingVisible(bool visible) {g_pingHidden=!visible;g_uidCommand.fetch_add(1,std::memory_order_release);}
 static bool UidBusinessBegin() {

@@ -24,7 +24,7 @@ public static class PluginConfiguration
             }
             return values;
         }
-        values = new(StringComparer.Ordinal) { ["language"] = "zh", ["hide_uid"] = "true", ["hide_ping"] = "false", ["hide_menu_uid"] = "true", ["hide_menu_name"] = "true", ["hide_card_uid"] = "true", ["hide_card_name"] = "true" };
+        values = new(StringComparer.Ordinal) { ["language"] = "zh", ["hide_uid"] = "true", ["hide_ping"] = "false", ["hide_menu_uid"] = "true", ["hide_menu_name"] = "true", ["hide_card_uid"] = "true", ["hide_card_name"] = "true", ["hide_hud_left"] = "false", ["hide_hud_center"] = "false", ["hide_hud_right"] = "false" };
         var legacy = Files.Under(game, "plugin/applepie_manager_config.txt");
         if (!File.Exists(legacy)) return values;
         var section = "";
